@@ -21,6 +21,7 @@
         'data/project_stage_data.xml',
         'views/napta.xml',
         'views/project.xml',
+        'views/hr_skills.xml',
         'views/wizard_timesheet_mass_validation.xml',
     ],
 

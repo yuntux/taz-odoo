@@ -568,6 +568,12 @@ class naptaProject(models.Model):
     def synchAllNapta(self):
         _logger.info('======== DEMARRAGE synchAllNapta')
         client = ClientRestNapta(self.env)
+        self.env['hr.skill.type'].create_update_odoo_skill_type()
+        self.env['hr.skill'].create_update_odoo_skill()
+        self.env['hr.skill.level'].create_update_odoo_skill_level()
+        self.env['hr.employee.skill'].create_update_odoo_employee_skill()
+        a=1/0
+
         client.refresh_cache()
 
         #### Retreive project that previous sync failled
@@ -589,6 +595,10 @@ class naptaProject(models.Model):
         self.env['hr.department'].create_update_odoo_business_unit()
         self.env['hr.job'].create_update_odoo_user_position()
         self.env['res.users'].create_update_odoo()
+        self.env['hr.skill.type'].create_update_odoo_skill_type()
+        self.env['hr.skill'].create_update_odoo_skill()
+        self.env['hr.skill.level'].create_update_odoo_skill_level()
+        self.env['hr.employee.skill'].create_update_odoo_employee_skill()
         self.env['hr.work.location'].create_update_odoo_location()
         self.env['hr.contract'].create_update_odoo_user_history()
         self.env['hr.leave.type'].create_update_odoo_user_holiday_category()
@@ -1259,6 +1269,209 @@ class naptaHrWorkLocation(models.Model):
             create_update_odoo(self.env, 'hr.work.location', dic)
 
         client.delete_not_found_anymore_object_on_napta('hr.work.location', 'location')
+
+
+class naptaHrSkillType(models.Model):
+    _inherit = 'hr.skill.type'
+    _sql_constraints = [
+        ('napta_id_uniq', 'UNIQUE (napta_id)',  "Impossible d'enregistrer deux objets avec le même Napta ID.")
+    ]
+    napta_id = fields.Char("Napta ID", copy=False)
+
+    def create_update_odoo_skill_type(self):
+        # Mapping : skill_category (Napta) -> hr.skill.type (Odoo)
+        _logger.info('---- BATCH Create or update Odoo skill_type')
+        client = ClientRestNapta(self.env)
+        skill_category_list = client.read_cache('skill_category')
+        for napta_id, skill_category in skill_category_list.items():
+            dic = {
+                    'napta_id' : napta_id,
+                    'name' : skill_category['attributes']['name'],
+                }
+            create_update_odoo(self.env, 'hr.skill.type', dic)
+
+        client.delete_not_found_anymore_object_on_napta('hr.skill.type', 'skill_category')
+
+
+class naptaHrSkillLevel(models.Model):
+    _inherit = 'hr.skill.level'
+    _sql_constraints = [
+        # ATTENTION : un même grade Napta peut être rattaché à plusieurs skill_category (via le grade_group partagé par plusieurs skill)
+        # => il doit alors être dupliqué en autant de hr.skill.level (un par skill_type_id), d'où la clé composée.
+        ('napta_id_skill_type_id_uniq', 'UNIQUE (napta_id, skill_type_id)',  "Impossible d'enregistrer deux objets avec le même couple {Napta ID, skill_type_id}.")
+    ]
+    napta_id = fields.Char("Napta ID", copy=False)
+
+    def create_update_odoo_skill_level(self):
+        # Mapping : grade (Napta) -> hr.skill.level (Odoo)
+        # Le grade_group Napta n'a pas d'équivalent Odoo (hr.skill.level est rattaché à un seul skill_type_id) :
+        # on détermine donc, pour chaque grade, l'ensemble des skill_type_id à alimenter via les skill qui référencent son grade_group_id,
+        # et on duplique le grade en autant de hr.skill.level.
+        _logger.info('---- BATCH Create or update Odoo skill_level')
+        client = ClientRestNapta(self.env)
+        grade_list = client.read_cache('grade')
+        skill_list = client.read_cache('skill')
+
+        grade_group_to_skill_categories = {}
+        grade_group_values = {}
+        for skill in skill_list.values():
+            grade_group_id = skill['attributes']['grade_group_id']
+            skill_category_id = skill['attributes']['skill_category_id']
+            if grade_group_id and skill_category_id:
+                grade_group_to_skill_categories.setdefault(grade_group_id, set()).add(skill_category_id)
+        for grade in grade_list.values():
+            grade_group_values.setdefault(grade['attributes']['grade_group_id'], []).append(grade['attributes']['value'])
+
+        kept_napta_ids_by_skill_type_id = {}
+        for napta_id, grade in grade_list.items():
+            grade_group_id = grade['attributes']['grade_group_id']
+            skill_category_ids = grade_group_to_skill_categories.get(grade_group_id, set())
+            if not skill_category_ids:
+                _logger.info("Grade Napta id=%s (grade_group_id=%s) n'est utilisé par aucun skill : ignoré." % (napta_id, grade_group_id))
+                continue
+
+            values = grade_group_values.get(grade_group_id, [])
+            min_value, max_value = min(values), max(values)
+            if max_value > min_value:
+                level_progress = round((grade['attributes']['value'] - min_value) / (max_value - min_value) * 100)
+            else:
+                level_progress = 100
+
+            for skill_category_id in skill_category_ids:
+                skill_type = self.env['hr.skill.type'].search([('napta_id', '=', skill_category_id)])
+                if len(skill_type) != 1:
+                    _logger.info("Aucun hr.skill.type Odoo trouvé pour skill_category_id Napta=%s." % skill_category_id)
+                    continue
+
+                vals = {
+                        'napta_id' : napta_id,
+                        'name' : grade['attributes']['name'],
+                        'description' : grade['attributes']['description'] or False,
+                        'skill_type_id' : skill_type.id,
+                        'level_progress' : level_progress,
+                    }
+                skill_level = self.env['hr.skill.level'].search([('napta_id', '=', napta_id), ('skill_type_id', '=', skill_type.id)])
+                if skill_level:
+                    skill_level.write(vals)
+                else:
+                    self.env['hr.skill.level'].create(vals)
+                self.env.cr.commit()
+                kept_napta_ids_by_skill_type_id.setdefault(skill_type.id, set()).add(napta_id)
+
+        # Suppression des hr.skill.level qui ne sont plus retournés par Napta pour leur skill_type_id
+        # (pas d'utilisation de client.delete_not_found_anymore_object_on_napta car le napta_id n'est pas unique sur ce modèle)
+        existing_skill_levels = self.env['hr.skill.level'].search([('napta_id', '!=', False)])
+        for skill_level in existing_skill_levels:
+            kept_napta_ids = kept_napta_ids_by_skill_type_id.get(skill_level.skill_type_id.id, set())
+            if skill_level.napta_id not in kept_napta_ids:
+                _logger.info("hr.skill.level obsolète supprimé : napta_id=%s skill_type_id=%s" % (skill_level.napta_id, skill_level.skill_type_id.id))
+                skill_level.unlink()
+                self.env.cr.commit()
+
+
+class naptaHrSkill(models.Model):
+    _inherit = 'hr.skill'
+    _sql_constraints = [
+        ('napta_id_uniq', 'UNIQUE (napta_id)',  "Impossible d'enregistrer deux objets avec le même Napta ID.")
+    ]
+    napta_id = fields.Char("Napta ID", copy=False)
+
+    def create_update_odoo_skill(self):
+        # Mapping : skill (Napta) -> hr.skill (Odoo)
+        _logger.info('---- BATCH Create or update Odoo skill')
+        client = ClientRestNapta(self.env)
+        skill_list = client.read_cache('skill')
+        for napta_id, skill in skill_list.items():
+            if not skill['attributes']['skill_category_id']:
+                _logger.info("Skill Napta id=%s sans skill_category_id : ignoré." % napta_id)
+                continue
+            dic = {
+                    'napta_id' : napta_id,
+                    'name' : skill['attributes']['name'],
+                    'skill_type_id' : {'napta_id' : skill['attributes']['skill_category_id']},
+                }
+            create_update_odoo(self.env, 'hr.skill', dic)
+
+        client.delete_not_found_anymore_object_on_napta('hr.skill', 'skill')
+
+
+class naptaHrEmployeeSkill(models.Model):
+    _inherit = 'hr.employee.skill'
+    _sql_constraints = [
+        ('napta_id_uniq', 'UNIQUE (napta_id)',  "Impossible d'enregistrer deux objets avec le même Napta ID.")
+    ]
+    napta_id = fields.Char("Napta ID", copy=False)
+
+    def create_update_odoo_employee_skill(self):
+        # Mapping : user_skill (Napta) -> hr.employee.skill (Odoo)
+        _logger.info('---- BATCH Create or update Odoo employee_skill (user_skill)')
+        client = ClientRestNapta(self.env)
+        user_skill_list = client.read_cache('user_skill')
+        skill_list = client.read_cache('skill')
+        grade_list = client.read_cache('grade')
+
+        # Le champ 'grade' de user_skill n'est PAS l'id du grade mais sa note ('value') au sein du grade_group du skill
+        # (confirmé en pratique : user_skill.attributes.grade = 3.0 alors que le grade_group du skill contient des grades de value 1 à 4, d'id napta 6/7/8/9)
+        # => on retrouve le vrai grade Napta via le couple (grade_group_id du skill, value), avant de chercher le hr.skill.level correspondant.
+        grade_napta_id_by_group_and_value = {}
+        for grade_napta_id, grade in grade_list.items():
+            key = (grade['attributes']['grade_group_id'], grade['attributes']['value'])
+            grade_napta_id_by_group_and_value[key] = grade_napta_id
+
+        kept_napta_ids = []
+        for napta_id, user_skill in user_skill_list.items():
+            if user_skill['attributes']['user_id'] in EXCLUDED_USERLIST:
+                # Utilisateurs techniques Napta (ex. adminapi@tasmane-napta.com) : jamais créés côté Odoo, rien à synchroniser.
+                continue
+
+            grade_value = user_skill['attributes'].get('grade')
+            if grade_value is None or int(grade_value) == 0:
+                # grade == null ou 0 signifie "non noté" côté Napta (value minimum = 1 sur un grade réel) : rien à faire, ce n'est pas une anomalie.
+                continue
+
+            employee = self.env['hr.employee'].search([('napta_id', '=', user_skill['attributes']['user_id']), ('active', 'in', [True, False])])
+            skill = self.env['hr.skill'].search([('napta_id', '=', user_skill['attributes']['skill_id'])])
+            if len(employee) != 1 or len(skill) != 1:
+                _logger.info("Impossible de créer/mettre à jour le user_skill Napta id=%s : employé ou skill introuvable sur Odoo." % napta_id)
+                continue
+
+            skill_napta = skill_list.get(user_skill['attributes']['skill_id'], {})
+            grade_group_id = skill_napta.get('attributes', {}).get('grade_group_id')
+            grade_napta_id = grade_napta_id_by_group_and_value.get((grade_group_id, int(grade_value)))
+            skill_level = False
+            if grade_napta_id:
+                skill_level = self.env['hr.skill.level'].search([('napta_id', '=', grade_napta_id), ('skill_type_id', '=', skill.skill_type_id.id)])
+            if not skill_level or len(skill_level) != 1:
+                _logger.info("Aucun hr.skill.level Odoo trouvé pour la note Napta=%s (skill Napta id=%s, grade_group_id=%s, skill_type_id=%s)." % (grade_value, user_skill['attributes']['skill_id'], grade_group_id, skill.skill_type_id.id))
+                skill_level = False
+
+            vals = {
+                    'napta_id' : napta_id,
+                    'employee_id' : employee.id,
+                    'skill_type_id' : skill.skill_type_id.id,
+                    'skill_id' : skill.id,
+                    'obtained_date' : user_skill['attributes']['obtained_date'] or False,
+                }
+            if skill_level:
+                vals['skill_level_id'] = skill_level.id
+
+            employee_skill = self.env['hr.employee.skill'].search([('napta_id', '=', napta_id)])
+            if employee_skill:
+                employee_skill.write(vals)
+            else:
+                if 'skill_level_id' not in vals:
+                    _logger.info("Impossible de créer le employee_skill Napta id=%s sans skill_level_id." % napta_id)
+                    continue
+                self.env['hr.employee.skill'].create(vals)
+            self.env.cr.commit()
+            kept_napta_ids.append(napta_id)
+        _logger.info('---- ENDDDD Create or update Odoo employee_skill (user_skill)')
+
+        obsolete_employee_skills = self.env['hr.employee.skill'].search([('napta_id', '!=', False), ('napta_id', 'not in', kept_napta_ids)])
+        for employee_skill in obsolete_employee_skills:
+            _logger.info("hr.employee.skill obsolète supprimé : napta_id=%s" % employee_skill.napta_id)
+            employee_skill.unlink()
+            self.env.cr.commit()
 
 
 ########################################################################################
