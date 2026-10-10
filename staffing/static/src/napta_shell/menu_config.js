@@ -76,18 +76,16 @@ export const NAPTA_MENU = [
 
     {
         key: "evaluations",
-        label: "Évaluations",
+        label: "Évaluations de mission",
         icon: "fa-pencil",
-        items: [
-            {
-                key: "evaluations.mission",
-                label: "Évaluations de mission",
-                layout: "table",
-                mock: "missionEvaluations",
-                subtitle: "Évaluations réalisées à la fin ou pendant une mission.",
-                tabs: ["Toutes", "En cours", "Terminées"],
-            },
-        ],
+        page: {
+            key: "evaluations.mission",
+            label: "Évaluations de mission",
+            layout: "table",
+            mock: "missionEvaluations",
+            subtitle: "Évaluations réalisées à la fin ou pendant une mission.",
+            tabs: ["Toutes", "En cours", "Terminées"],
+        },
     },
 
     { key: "career", label: "Carrière", icon: "fa-graduation-cap", inert: true },
