@@ -98,27 +98,7 @@ export const NAPTA_MENU = [
         ],
     },
 
-    {
-        key: "career",
-        label: "Carrière",
-        icon: "fa-graduation-cap",
-        items: [
-            {
-                key: "career.career_tracks",
-                label: "Parcours professionnels",
-                layout: "cards",
-                mock: "careerTracks",
-                subtitle: "Parcours formés de plusieurs fiches métiers ordonnées.",
-            },
-            {
-                key: "career.job_sheets",
-                label: "Fiches de poste",
-                layout: "table",
-                mock: "jobSheets",
-                subtitle: "Compétences et niveaux attendus pour chaque poste de l'entreprise.",
-            },
-        ],
-    },
+    { key: "career", label: "Carrière", icon: "fa-graduation-cap", inert: true },
 
     {
         key: "reports",
