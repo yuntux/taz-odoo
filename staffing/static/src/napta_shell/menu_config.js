@@ -80,14 +80,6 @@ export const NAPTA_MENU = [
         icon: "fa-pencil",
         items: [
             {
-                key: "evaluations.annual",
-                label: "Évaluations annuelles",
-                layout: "table",
-                mock: "annualEvaluations",
-                subtitle: "Campagnes d'évaluation annuelle des collaborateurs.",
-                tabs: ["En cours", "Terminées"],
-            },
-            {
                 key: "evaluations.mission",
                 label: "Évaluations de mission",
                 layout: "table",
