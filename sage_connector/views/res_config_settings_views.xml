@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo>
+    <record id="view_sage_connector_res_config_settings" model="ir.ui.view">
+        <field name="name">sage.connector.res.config.settings.form</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="account.res_config_settings_view_form" />
+        <field name="arch" type="xml">
+            <block id="storno" position="after">
+                <block id="sage_connector" title="Sage FRP 1000">
+                    <setting id="sage_connector_setting" string="Connecteur Sage">
+                        <div class="content-group">
+                            <div class="row mt16">
+                                <label for="sage_api_endpoint" class="col-lg-5 o_light_label" />
+                                <field name="sage_api_endpoint" />
+                            </div>
+                            <div class="row mt16">
+                                <label for="sage_api_token" class="col-lg-5 o_light_label" />
+                                <field name="sage_api_token" password="True" />
+                            </div>
+                            <div class="row mt16">
+                                <label for="sage_contract_code" class="col-lg-5 o_light_label" />
+                                <field name="sage_contract_code" />
+                            </div>
+                            <div class="row mt16">
+                                <label for="sage_etablissement_code" class="col-lg-5 o_light_label" />
+                                <field name="sage_etablissement_code" />
+                            </div>
+                            <div class="row mt16">
+                                <label for="sage_compte_equilibre" class="col-lg-5 o_light_label" />
+                                <field name="sage_compte_equilibre" />
+                            </div>
+                        </div>
+                    </setting>
+                </block>
+            </block>
+        </field>
+    </record>
+</odoo>
