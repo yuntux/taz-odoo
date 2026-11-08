@@ -212,6 +212,7 @@ absorberait les écarts sans que personne ne s'en aperçoive.
 | Champ | Type | Valeurs |
 |---|---|---|
 | `sage_sync_status` | Selection | `to_send` (À envoyer), `sent` (Envoyé), `to_update` (À mettre à jour). Vide/`False` = jamais concerné (journal non coché, ou pas encore validé). |
+| `sage_import_line_oids` | Text (JSON) | OID Sage (`TImportEcritures`) de chaque ligne envoyée, dans l'ordre d'envoi — champ technique, pas de vue associée. Utilisé pour le `PUT` ciblé d'une pièce `to_update` (§6.1 point 4, hypothèse non confirmée). |
 
 Pas de valeur `error` dans la sélection : un envoi en échec **ne change pas** le statut (la pièce
 reste `to_send` et sera retentée au prochain déclencheur — prochaine validation d'une autre pièce
@@ -242,6 +243,15 @@ connecteur (cascade §8.1, création §8.2) s'appuie donc normalement sur un sim
 `_precompute_protected`), seul un utilisateur du groupe `account.group_account_user` (ADV) peut
 modifier ces deux champs, comme le reste des données comptables du tiers. `sage_connector` dépend
 donc maintenant de `project_accounting`.
+
+**Boutons de résolution manuelle réservés à la comptabilité** (corrigé le 2026-11-08, audit) : les
+boutons "Rechercher / créer le code client/fournisseur" portent désormais `groups=
+"account.group_account_user"` dans les 3 vues (`views/res_partner_views.xml`), **et** la méthode
+`_sage_resolve_button` revérifie elle-même `self.env.user.has_group(...)` et lève une `AccessError`
+sinon — le `groups=` d'une vue ne fait que masquer le bouton côté UI, il ne bloque pas un appel
+direct à l'action, donc la vraie protection est le contrôle serveur, pas la vue. Avant ce correctif,
+n'importe quel utilisateur avec accès en écriture sur `res.partner` pouvait déclencher une
+recherche/écriture Sage via ces boutons, hors de tout contrôle comptable.
 
 **Pas de conflit en pratique** : la recherche automatique (§8.0 point 1) se déclenche à la
 validation d'une pièce comptable, qu'un non-ADV ne peut de toute façon pas confirmer — la question
@@ -277,15 +287,25 @@ Déclenché sur l'action de validation (passage en `posted`).
    le trouver silencieusement. Si elle ne trouve rien : lever une erreur bloquante (`UserError`) qui
    renvoie vers la fiche tiers (bouton manuel, §8.0 point 2) — la validation échoue, rien n'est
    envoyé. **Jamais** de wizard de création à ce stade (cf. §8.0).
+   **Cas particulier (corrigé le 2026-11-08, audit)** : si la cascade automatique *a bien trouvé* un
+   code sur Sage mais n'a pas pu l'enregistrer (fiche "protégée" — déjà facturée — et utilisateur
+   validant la pièce non-ADV, cf. §5.2), le message d'erreur le précise explicitement ("code trouvé
+   mais non enregistré, fiche protégée") au lieu du message générique "aucun code trouvé", qui
+   aurait été trompeur dans ce cas.
 2. **Statut** :
    - si `sage_sync_status` est vide → passer à `to_send` ;
    - si `sage_sync_status == 'sent'` → passer à `to_update`.
-3. **Envoi groupé** (porte sur TOUTES les pièces en attente, pas seulement celle qu'on vient de
-   valider) :
+3. **Envoi groupé** (porte sur TOUTES les pièces en attente **de la société courante**, pas
+   seulement celle qu'on vient de valider — filtré par `company_id` depuis le correctif du
+   2026-11-08 : un seul client Sage, lié à `env.company`, est construit pour tout le lot, il ne doit
+   pas mélanger des pièces d'autres sociétés ayant chacune leur propre contrat/endpoint) :
    - rechercher tous les `account.move` avec `sage_sync_status == 'to_send'` (tous journaux
-     activés confondus) ;
+     activés confondus, société courante) ;
    - construire une session d'import unique contenant les lignes (`account.move.line`) de
-     *toutes* ces pièces ;
+     *toutes* ces pièces ; **une pièce dont la construction des lignes échoue (donnée incohérente)
+     est exclue du lot et loguée, sans bloquer l'envoi des autres** (corrigé le 2026-11-08 — avant
+     ce correctif, une seule pièce malformée empêchait l'envoi de tout le lot du jour, y compris les
+     pièces valides) ;
    - nommer la session `AAAAMMJJHHMMSSmmm` (date+heure+milliseconde) concaténé à un UUID, pour une
      unicité garantie. **Cet identifiant doit être strictement identique aux 3 endroits de la
      trame** : `Caption` de la session, `codeSessionInf` et `codeSessionSup` de l'exécution.
@@ -301,11 +321,59 @@ Déclenché sur l'action de validation (passage en `posted`).
        indéterminé, ne pas supposer un succès) ;
      - si l'appel échoue entièrement (erreur réseau, timeout, HTTP non-200 sur le batch lui-même) :
        aucune pièce ne change de statut, toutes restent `to_send`.
-4. **Pièces en `to_update`** : rechercher les `account.move` avec `sage_sync_status == 'to_update'`.
-   **Non implémenté dans cette spec** : aucune méthode API de mise à jour d'une écriture déjà
-   importée n'existe (cf. §3 — vraisemblablement une limite structurelle, pas un trou de doc). Ne
-   rien tenter automatiquement pour ces pièces : les laisser visibles en `to_update` pour
-   traitement manuel (contre-passation + ré-import côté Sage par un humain).
+   - **`cr.commit()` immédiat après écriture des statuts** (corrigé le 2026-11-08, audit) :
+     l'opération EXEC porte son propre `$transaction: ["commit"]` (§7.4) — Sage l'applique donc de
+     façon définitive et immédiate, indépendamment de la transaction Odoo en cours. Sans commit
+     explicite côté Odoo juste après avoir écrit `sent`/`to_send` sur les pièces, un rollback Odoo
+     ultérieur (ex. plus haut dans l'appelant de `action_post`) referait disparaître la trace de
+     l'envoi alors qu'il est déjà irréversible sur Sage, et la pièce serait renvoyée en double au
+     prochain passage. Le commit est inhibé en mode test (`_can_commit()`, même garde que le cœur
+     Odoo utilise pour ce genre d'appel externe irréversible).
+4. **Pièces en `to_update`** : désormais reprises dans le même envoi groupé que les `to_send`
+   (point 3), **par hypothèse non confirmée en bac à sable — à tester avant mise en prod**
+   (2026-11-08) :
+   - à la création d'une pièce (premier envoi, `POST cptimport/timportecritures`), l'OID
+     `TImportEcritures` renvoyé dans `$location` de chaque ligne est mémorisé sur la pièce
+     (`sage_import_line_oids`, JSON, une entrée par ligne dans l'ordre d'envoi) ;
+   - au renvoi d'une pièce `to_update`, chaque ligne dont l'OID est connu est envoyée en `PUT
+     cptimport/timportecritures('<OID>')` (mise à jour de la ligne d'import déjà créée) au lieu
+     d'un nouveau `POST` — l'hypothèse testée étant qu'un `PUT` met à jour l'écriture déjà importée
+     plutôt que d'en recréer une (et donc la dupliquer, cf. le risque documenté ci-dessous si
+     l'hypothèse s'avère fausse) ;
+   - une ligne ajoutée depuis le premier envoi (pas d'OID connu à sa position) repart en `POST`
+     classique ;
+   - **Adressage par clé (OID), pas par prédicat** : SData accepte les deux formes pour adresser
+     une ressource (`entity('OID')` ou `entity(champ eq 'valeur')`, cf. wiki officiel
+     [Ressource (sdata)](https://frp.sage.fr/index.php/Ressource_(sdata)), section "Sélecteur de
+     ressource"), mais à l'intérieur d'un `$batch`, **le seul exemple officiel de `PUT` adresse par
+     clé** (`"$url": "gentiers/ttiers('9D33A23CFA6A005500F6000000285DAE')"`, section "Gestion de la
+     transaction") — l'exemple de `PUT` par prédicat (`ttiers(code eq 'ABI 00007')`) n'apparaît que
+     **hors `$batch`**, jamais dans un exemple groupé. Testé en direct le 2026-11-08 (3 variantes,
+     en `GET`) : un sélecteur par prédicat ou une collection sans clé dans un `$batch` échoue
+     systématiquement avec `400 "Get entity property require a single resource context"` /
+     `"Invalid entity selector (NULL)"`. D'où le choix de l'OID plutôt que, par exemple, un `PUT`
+     adressé par `numeroPiece` (évoqué en discussion) : rien dans la documentation ne montre cette
+     dernière forme fonctionnant dans un `$batch`, alors que la forme par clé y est officiellement
+     démontrée pour `PUT`. **Confirmé en direct le 2026-11-08** : un `PUT`
+     `cptimport/timportecritures(numeroPiece eq '...')` dans un `$batch` échoue aussi avec `400
+     "Invalid entity selector (NULL)"` (cette fois sans le mot "Get" dans le message, qui ne
+     disait donc pas une restriction propre à GET) — confirmation qu'**aucun prédicat n'est
+     accepté pour adresser une ressource dans un `$batch`, quel que soit le verbe HTTP** ; seule la
+     clé OID fonctionne. L'adressage par `sage_import_line_oids` est donc la seule approche
+     viable à l'intérieur de ce `$batch`.
+   - **à vérifier en bac à sable avant toute mise en prod** : (a) qu'un `PUT` sur
+     `cptimport/timportecritures('<OID>')` est bien accepté par Sage (testé en direct le
+     2026-11-08 : un `PUT` sans clé sur la collection échoue avec `400 Invalid entity selector
+     (NULL)`, confirmant qu'une clé est exigée — mais le comportement avec une clé réelle n'a pas
+     été testé) ; (b) qu'il met bien à jour l'écriture déjà postée côté Sage au lieu de la
+     dupliquer ou d'échouer silencieusement ; (c) le comportement si les lignes ont changé de
+     nombre entre les deux envois (cas non couvert par la position simple utilisée ici) ; (d) si
+     `PUT` renvoie bien un `$httpStatus`/`$location` exploitable dans la réponse du `$batch`, ou
+     s'il faut relire la pièce séparément pour confirmer le succès. **Si l'hypothèse s'avère
+     fausse** (le `PUT` échoue, ou duplique quand même l'écriture) : revenir au comportement
+     précédent (ne rien tenter automatiquement sur `to_update`, cf. §3 — aucune autre méthode API
+     de mise à jour n'est documentée, limite vraisemblablement structurelle) et réviser entièrement
+     ce point.
 
 **Cron de rattrapage** (reprise de la demande initiale du besoin, toujours valable) : un job
 quotidien qui relance le même traitement du point 3 pour couvrir le cas où le dernier envoi en
@@ -426,7 +494,7 @@ son cours normal, sans aucune interaction avec Sage.
 | `deviseTenueCompte` | `move.company_id.currency_id.name` |
 | `etablissement` | `move.company_id.sage_etablissement_code` (cf. §4.2) |
 | `typeEcriture` | `"Brouillard"` (fixe, confirmé) |
-| `typePiece` | **Client (`out_invoice`/`out_refund`)** : `"FC"` (facture client) — sauf si le tiers facturé est lui-même une société du groupe (`res.company.partner_id`), auquel cas `"FCI"` (facture client intragroupe) ; `"VA"` (avoir client) reste une hypothèse non confirmée, pas d'équivalent FCI confirmé pour un avoir intragroupe *(TODO)*. **Fournisseur (`in_invoice`/`in_refund`)** : voir liste complète et point ouvert ci-dessous. |
+| `typePiece` | **Client (`out_invoice`/`out_refund`)** : `"FC"` (facture client) — sauf si le tiers facturé est lui-même une société du groupe (`res.company.partner_id`), auquel cas `"FCI"` (facture client intragroupe) ; `"VA"` (avoir client) reste une hypothèse non confirmée, pas d'équivalent FCI confirmé pour un avoir intragroupe *(TODO)*. **Fournisseur (`in_invoice`/`in_refund`)** : voir liste complète et point ouvert ci-dessous. **Écriture diverse (`entry`)** : `"OD"` — ajouté le 2026-11-08 (audit) ; la portée (§6.1 point 0) couvrait déjà ce type de pièce mais ce mapping ne l'avait pas, ce qui envoyait un `typePiece: null` à Sage pour toute écriture diverse sur un journal activé. |
 | `libelleEcriture` | `line.name` ou `move.ref` ou `move.name`, **tronqué à 128 caractères** (limite confirmée empiriquement sur le bac à sable par bissection le 2026-11-08 : au-delà, l'EXEC échoue avec un message générique "(TranBatch) Erreur de transaction :1" sans rapport avec le vrai contenu, aucune limite documentée officiellement — ni les retours à la ligne ni les caractères spéciaux ne sont en cause, uniquement la longueur) |
 | `urlScanPiece` | URL de la fiche Odoo de la facture — cf. détail ci-dessous |
 
@@ -725,6 +793,12 @@ l'exigence "jamais de création silencieuse" (§8.2) implique de toute façon un
      validation avec un message explicite qui renvoie vers le bouton manuel (point 2), ex. *"Aucun
      code Sage trouvé pour ce tiers. Ouvrez sa fiche et utilisez le bouton 'Rechercher / créer le
      code [client/fournisseur]' avant de valider cette facture."*
+     **Bug corrigé le 2026-11-08 (audit)** : `_sage_try_exact_criterion` prenait auparavant le
+     premier résultat sans vérifier qu'il était unique, contrairement à ce que cette section exige
+     — un tiers ambigu sur Sage (plusieurs `TTiers` partageant le même SIRET/SIREN/TVA, cas réel
+     documenté en §2) pouvait donc être rattaché automatiquement et silencieusement à une pièce,
+     sans confirmation humaine. Même garde que la cascade manuelle (`len(resources) == 1`) depuis
+     ce correctif.
 2. **Manuel, deux boutons distincts sur la fiche `res.partner`** — un pour le rôle client, un pour
    le rôle fournisseur, strictement en miroir l'un de l'autre (§8.1) : chacun lance la cascade
    complète pour **son seul rôle** (y compris la recherche par nom en dernier recours) et, si rien
@@ -807,6 +881,12 @@ deux casses fonctionnent.)
 
 Pour chaque rôle trouvé : `partner.sage_client_code = <Caption du TClient>` et/ou
 `partner.sage_vendor_code = <Caption du TFournisseur>`, indépendamment l'un de l'autre.
+
+**Échappement du guillemet simple dans les clauses `where=` (corrigé le 2026-11-08, audit)** : un
+nom/SIRET/TVA contenant une apostrophe (fréquent en français, ex. "L'Oréal") cassait la syntaxe du
+filtre envoyé à Sage sur les 6 points d'interrogation de ce fichier. Centralisé dans un helper
+(`_sage_eq_filter`) qui double le guillemet simple (convention OData), appelé partout où un filtre
+`eq` est construit.
 
 **URLs d'appel** (exemple fictif, tiers `TOTAL`, SIRET et TVA inventés pour l'exemple) :
 

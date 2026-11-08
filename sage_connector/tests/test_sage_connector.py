@@ -18,6 +18,11 @@ class TestSageConnector(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.company = cls.env.company
+        # La résolution manuelle d'un code Sage (boutons/wizard) est réservée à la comptabilité
+        # (§5.2) -- l'utilisateur de test par défaut doit en faire partie pour les tests qui ne
+        # portent pas spécifiquement sur cette restriction (cf. `non_adv_user` ci-dessous, créé
+        # séparément par les tests qui testent justement l'absence de ce groupe).
+        cls.env.user.groups_id |= cls.env.ref('account.group_account_user')
         # Les paramètres API société sont volontairement laissés vides : aucun test ne doit
         # déclencher un vrai appel réseau (SDataClient() lève alors immédiatement UserError,
         # avalée par le connecteur -- rapide et déterministe). Chaque test qui a besoin d'un client
@@ -571,7 +576,7 @@ class TestSageConnector(TransactionCase):
         wizard = self.env['sage.partner.resolve.wizard'].create({
             'partner_id': partner.id, 'role': 'vendor', 'mode': 'create', 'new_code': '401NOUVEAU',
         })
-        self.assertFalse(wizard.can_validate)
+        self.assertTrue(wizard.missing_required_label)
         self.assertIn('SIRET', wizard.missing_required_label)
         self.assertIn('SIREN', wizard.missing_required_label)
         self.assertIn('TVA intracommunautaire', wizard.missing_required_label)
@@ -589,7 +594,6 @@ class TestSageConnector(TransactionCase):
         wizard = self.env['sage.partner.resolve.wizard'].create({
             'partner_id': partner.id, 'role': 'vendor', 'mode': 'create', 'new_code': '401NOUVEAU',
         })
-        self.assertTrue(wizard.can_validate)
         self.assertFalse(wizard.missing_required_label)
 
     def test_wizard_choose_mode_ignores_missing_siret_siren_vat(self):
@@ -598,7 +602,6 @@ class TestSageConnector(TransactionCase):
             'partner_id': partner.id, 'role': 'client', 'mode': 'choose',
             'candidate_ids': [(0, 0, {'code': '411EXISTANT', 'name': 'Tiers Sage Test'})],
         })
-        self.assertTrue(wizard.can_validate)
         self.assertFalse(wizard.missing_required_label)
 
     def test_wizard_validate_blocked_if_role_already_resolved(self):

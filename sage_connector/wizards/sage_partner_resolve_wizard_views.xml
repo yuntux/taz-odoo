@@ -25,7 +25,6 @@
                         <p>L'API Sage n'a rien renvoyé pour ce tiers -- créer un nouveau tiers avec ce code ?</p>
                         <field name="new_code"/>
                         <field name="missing_required_label" invisible="1"/>
-                        <field name="can_validate" invisible="1"/>
                         <div class="alert alert-warning" role="alert" invisible="not missing_required_label">
                             Champ(s) manquant(s) sur la fiche du tiers avant de pouvoir le créer sur Sage :
                             <field name="missing_required_label" readonly="1" nolabel="1"/>.
@@ -35,9 +34,7 @@
                 </sheet>
                 <footer>
                     <button name="action_validate" type="object" string="Valider" class="btn-primary"
-                            invisible="mode == 'create' and not can_validate"/>
-                    <button string="Valider" class="btn-secondary text-muted"
-                            invisible="not(mode == 'create' and not can_validate)"/>
+                            invisible="mode == 'create' and missing_required_label"/>
                     <button string="Annuler" special="cancel" class="btn-secondary"/>
                 </footer>
             </form>

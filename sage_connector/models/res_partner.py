@@ -1,11 +1,12 @@
 import logging
 import re
 import traceback
-import unicodedata
+
+from unidecode import unidecode
 
 from odoo import _, api, fields, models
 from odoo.addons.project_accounting.models.res_partner import PROTECTED_FIELD_LIST
-from odoo.exceptions import UserError
+from odoo.exceptions import AccessError, UserError, ValidationError
 
 from .sage_client import (
     SAGE_ENTITY_PARTNER,
@@ -33,8 +34,8 @@ _SAGE_JOIN_FIELD_BY_CRITERION = {
 class ResPartner(models.Model):
     _inherit = 'res.partner'
 
-    sage_client_code = fields.Char(string="Code tiers Sage client", readonly=False, copy=False)
-    sage_vendor_code = fields.Char(string="Code tiers Sage fournisseur", readonly=False, copy=False)
+    sage_client_code = fields.Char(string="Code tiers Sage client", readonly=True, copy=False)
+    sage_vendor_code = fields.Char(string="Code tiers Sage fournisseur", readonly=True, copy=False)
 
     # ------------------------------------------------------------------
     # Payload (mapping tiers comptables, SPEC.md §7bis)
@@ -43,8 +44,8 @@ class ResPartner(models.Model):
     def _sage_build_payload(self):
         self.ensure_one()
         caption = self.name
-        if not self.is_company and self.first_name:
-            caption = "%s %s" % (self.first_name, self.name)
+        if not self.is_company:
+            caption = ("%s %s" % (self.first_name or '', self.name or '')).strip()
         payload = {
             'caption': caption,
             'sitesList': [{
@@ -71,13 +72,29 @@ class ResPartner(models.Model):
 
     def _sage_normalize_root(self):
         self.ensure_one()
-        text = unicodedata.normalize('NFKD', self.name or '').encode('ascii', 'ignore').decode('ascii')
-        return re.sub(r'[^A-Za-z0-9]', '', text).upper()
+        return re.sub(r'[^A-Za-z0-9]', '', unidecode(self.name or '')).upper()
 
     def _sage_default_code(self, role):
         self.ensure_one()
         prefix = '411' if role == 'client' else '401'
         return prefix + self._sage_normalize_root()
+
+    @staticmethod
+    def _sage_eq_filter(field, value):
+        """Construit une clause `<field> eq '<value>'` en échappant le guillemet simple (doublé,
+        convention OData) -- un nom/SIRET/TVA contenant une apostrophe (ex. "L'Oréal") casserait
+        sinon la syntaxe du filtre envoyé à Sage.
+        """
+        escaped = (value or '').replace("'", "''")
+        return "%s eq '%s'" % (field, escaped)
+
+    def _sage_exact_criteria(self):
+        """Critères exacts de la cascade (§8.1), dans l'ordre -- utilisé à la fois par la
+        recherche automatique silencieuse et par la cascade manuelle, pour qu'un futur critère
+        ajouté à l'un soit automatiquement pris en compte par l'autre.
+        """
+        self.ensure_one()
+        return (('siret', self.siret), ('siren', self.siren), ('vat', self.vat))
 
     # ------------------------------------------------------------------
     # Cascade de recherche (§8.1)
@@ -85,47 +102,68 @@ class ResPartner(models.Model):
 
     def _sage_try_exact_criterion(self, client, criterion, value):
         """Interroge TClient et TFournisseur par jointure sur `criterion`, remplit chaque code de
-        rôle encore manquant si un résultat est trouvé. Ne touche jamais un code déjà renseigné.
+        rôle encore manquant si un résultat *unique* est trouvé (une correspondance ambiguë n'est
+        jamais rattachée automatiquement, même chemin que la cascade manuelle `_sage_resolve_role`
+        -- §8.0 point 1). Ne touche jamais un code déjà renseigné.
+
+        Renvoie `True` si un code a bien été trouvé côté Sage mais n'a pas pu être enregistré côté
+        Odoo (fiche protégée, écriture bloquée par `project_accounting` pour un utilisateur non-ADV)
+        -- pour que l'appelant puisse distinguer ce cas de "rien trouvé" (cf. `_sage_ensure_partner_code`
+        dans `account_move.py`).
         """
         self.ensure_one()
         join_field = _SAGE_JOIN_FIELD_BY_CRITERION[criterion]
+        blocked = False
         if not self.sage_client_code:
             resources = client.get_all_pages(
-                SAGE_ENTITY_PARTNER_CLIENT, params={'where': "%s eq '%s'" % (join_field, value)},
+                SAGE_ENTITY_PARTNER_CLIENT, params={'where': self._sage_eq_filter(join_field, value)},
             )
-            if resources:
-                self.sage_client_code = resources[0].get('Caption')
+            if len(resources) == 1:
+                try:
+                    self.sage_client_code = resources[0].get('Caption')
+                except ValidationError:
+                    blocked = True
         if not self.sage_vendor_code:
             resources = client.get_all_pages(
-                SAGE_ENTITY_PARTNER_VENDOR, params={'where': "%s eq '%s'" % (join_field, value)},
+                SAGE_ENTITY_PARTNER_VENDOR, params={'where': self._sage_eq_filter(join_field, value)},
             )
-            if resources:
-                self.sage_vendor_code = resources[0].get('Caption')
+            if len(resources) == 1:
+                try:
+                    self.sage_vendor_code = resources[0].get('Caption')
+                except ValidationError:
+                    blocked = True
+        return blocked
 
     def _sage_search_cascade_auto(self):
         """Recherche automatique et silencieuse, déclenchée à la validation d'une pièce (§8.0
         point 1). Ne tente QUE les critères exacts (SIRET, SIREN, TVA) -- jamais la recherche par
         nom, qui nécessite une confirmation humaine (cf. `_sage_resolve_role`, boutons manuels).
+
+        Renvoie `True` si un code a été trouvé sur Sage pour au moins un rôle mais n'a pas pu être
+        écrit (fiche protégée) -- cf. `_sage_try_exact_criterion`.
         """
         self.ensure_one()
         if self.sage_client_code and self.sage_vendor_code:
-            return
+            return False
         try:
             client = SDataClient(self.env)
         except Exception:
             _logger.warning("Sage connector: unable to build API client for partner search")
             _logger.warning(traceback.format_exc())
-            return
-        for criterion, value in (('siret', self.siret), ('siren', self.siren), ('vat', self.vat)):
+            return False
+        blocked = False
+        for criterion, value in self._sage_exact_criteria():
             if not value:
                 continue
             try:
-                self._sage_try_exact_criterion(client, criterion, value)
+                if self._sage_try_exact_criterion(client, criterion, value):
+                    blocked = True
             except Exception:
                 _logger.warning("Sage connector: search failed for criterion %s", criterion)
                 _logger.warning(traceback.format_exc())
             if self.sage_client_code and self.sage_vendor_code:
-                return
+                return False
+        return blocked
 
     def _sage_search_by_name(self, client, role_entity):
         """Recherche par nom, critère de dernier recours (§8.1, grilles personne morale/physique) --
@@ -135,9 +173,12 @@ class ResPartner(models.Model):
         """
         self.ensure_one()
         if self.is_company:
-            where = "tiers.raisonSociale eq '%s'" % self.name
+            where = self._sage_eq_filter('tiers.raisonSociale', self.name)
         else:
-            where = "tiers.nom eq '%s' and tiers.prenom eq '%s'" % (self.name or '', self.first_name or '')
+            where = "%s and %s" % (
+                self._sage_eq_filter('tiers.nom', self.name),
+                self._sage_eq_filter('tiers.prenom', self.first_name),
+            )
         return client.get_all_pages(role_entity, params={'where': where})
 
     def _sage_resolve_role(self, client, field_name, entity):
@@ -158,11 +199,11 @@ class ResPartner(models.Model):
         """
         self.ensure_one()
         already_resolved = bool(self[field_name])
-        for criterion, value in (('siret', self.siret), ('siren', self.siren), ('vat', self.vat)):
+        for criterion, value in self._sage_exact_criteria():
             if not value:
                 continue
             join_field = _SAGE_JOIN_FIELD_BY_CRITERION[criterion]
-            resources = client.get_all_pages(entity, params={'where': "%s eq '%s'" % (join_field, value)})
+            resources = client.get_all_pages(entity, params={'where': self._sage_eq_filter(join_field, value)})
             if not resources:
                 continue
             if already_resolved:
@@ -240,7 +281,7 @@ class ResPartner(models.Model):
 
     @api.model
     def _sage_reread_role_caption(self, client, role_entity, code):
-        resources = client.get_all_pages(role_entity, params={'where': "tiers.code eq '%s'" % code})
+        resources = client.get_all_pages(role_entity, params={'where': self._sage_eq_filter('tiers.code', code)})
         return resources[0].get('Caption') if resources else None
 
     # ------------------------------------------------------------------
@@ -273,6 +314,14 @@ class ResPartner(models.Model):
         création si rien trouvé).
         """
         self.ensure_one()
+        # Le `groups=` posé sur le bouton dans la vue (§5.2) ne fait que le masquer dans l'UI --
+        # ça ne bloque pas un appel direct à l'action. Même contrôle qu'exige le wizard (ACL
+        # `account.group_account_user`), vérifié ici aussi pour une vraie protection serveur.
+        if not self.env.user.has_group('account.group_account_user'):
+            raise AccessError(_(
+                "Seul un utilisateur du service comptabilité peut rechercher ou créer un code "
+                "tiers Sage.",
+            ))
         field_name, entity = self._SAGE_ROLE_INFO[role]
         role_label = self._SAGE_ROLE_LABEL[role]
         client = SDataClient(self.env)

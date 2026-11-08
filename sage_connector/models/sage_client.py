@@ -80,7 +80,27 @@ class SDataClient:
         return " \\\n".join(parts)
 
     @staticmethod
-    def _describe_error_body(response):
+    def _sage_collect_diagnoses(node):
+        """Parcours récursif générique de l'objet JSON à la recherche de toute clé `$diagnoses`,
+        à n'importe quelle profondeur. Remplace une liste d'emplacements codés en dur au fil des
+        incidents constatés en prod (racine `$`, `$batch/$`, `$resources[]/$`) -- cette liste
+        s'étant déjà révélée incomplète deux fois (diagnostic non détecté, fallback texte brut
+        utilisé par chance), un parcours générique couvre aussi tout emplacement futur non prévu.
+        """
+        found = []
+        if isinstance(node, dict):
+            diagnoses = node.get('$diagnoses')
+            if diagnoses:
+                found.extend(diagnoses)
+            for value in node.values():
+                found.extend(SDataClient._sage_collect_diagnoses(value))
+        elif isinstance(node, list):
+            for item in node:
+                found.extend(SDataClient._sage_collect_diagnoses(item))
+        return found
+
+    @classmethod
+    def _describe_error_body(cls, response):
         """Résumé exploitable d'une erreur Sage : un simple `response.text[:500]` coupe souvent
         avant le `$diagnoses`/`$messages` qui explique réellement le refus (constaté en prod sur un
         `$batch` dont la session et plusieurs lignes avaient réussi (`$httpStatus` 201) avant que le
@@ -92,54 +112,39 @@ class SDataClient:
         except ValueError:
             return response.text[:2000]
 
-        diagnoses = []
-        top_level = data.get('$') if isinstance(data, dict) else None
-        if isinstance(top_level, dict) and top_level.get('$diagnoses'):
-            diagnoses.extend(top_level['$diagnoses'])
-        # Un rollback de `$batch` (toutes les opérations réussies individuellement, mais annulées
-        # globalement) porte son diagnostic sous une clé `$batch` dédiée, pas sous `$` -- constaté
-        # en prod sur un rejet "Un tiers possédant le même code existe déjà" (§8.2), jamais détecté
-        # avant ce correctif, seul le texte brut (par chance sous 2000 caractères) le montrait.
-        batch_level = data.get('$batch') if isinstance(data, dict) else None
-        if isinstance(batch_level, dict):
-            nested = batch_level.get('$') if isinstance(batch_level.get('$'), dict) else {}
-            if nested.get('$diagnoses'):
-                diagnoses.extend(nested['$diagnoses'])
-        for resource in (data.get('$resources') or []) if isinstance(data, dict) else []:
-            if not isinstance(resource, dict):
-                continue
-            # Le diagnostic d'une ressource en échec dans un `$batch` est niché sous sa propre clé
-            # `$` (ex. {"$milliseconds": ..., "$": {"$diagnoses": [...]}}), PAS directement sous
-            # `$diagnoses` au premier niveau de la ressource -- erreur constatée en prod : le
-            # diagnostic n'était pas détecté, seul le fallback texte brut (sous 2000 caractères
-            # par chance) l'a laissé visible.
-            nested = resource.get('$') if isinstance(resource.get('$'), dict) else {}
-            if nested.get('$diagnoses') or (resource.get('$httpStatus') or 0) >= 400:
-                diagnoses.append(resource)
+        diagnoses = cls._sage_collect_diagnoses(data)
+        # Une ressource en échec dans un `$batch` peut n'avoir aucun `$diagnoses` du tout, juste un
+        # `$httpStatus` >= 400 -- dans ce cas, inclure la ressource elle-même (déjà couvert par le
+        # diagnostic nested sinon) pour ne pas revenir aveuglément au texte brut tronqué.
+        if isinstance(data, dict):
+            for resource in data.get('$resources') or []:
+                if not isinstance(resource, dict) or (resource.get('$httpStatus') or 0) < 400:
+                    continue
+                nested = resource.get('$') if isinstance(resource.get('$'), dict) else {}
+                if not nested.get('$diagnoses'):
+                    diagnoses.append(resource)
 
         if not diagnoses:
             return response.text[:2000]
         return json.dumps(diagnoses, ensure_ascii=False)[:2000]
 
-    def _request(self, method, entity, resource_id=None, params=None, json=None):
-        url = self._url(entity)
-        if resource_id is not None:
-            url = "%s('%s')" % (url, resource_id)
-        if params:
-            # requests/urlencode encodent l'espace en "+" par défaut -- Sage ne le décode pas (son
-            # parseur de filtre `where=` le prend au pied de la lettre, cf. erreur 400 observée sur
-            # le bac à sable), il faut du "%20" (quote_via=quote).
-            url = "%s?%s" % (url, urlencode(params, quote_via=quote))
-            params = None
+    def _send(self, method, url, json=None):
+        """Boucle d'envoi partagée par `_request` (première page / tout appel simple) et par la
+        pagination de `get_all_pages` (pages suivantes) -- pour que les deux aient exactement la
+        même gestion d'erreur/retry au lieu que la pagination réimplique sa propre version
+        divergente (constaté : elle masquait silencieusement une vraie erreur HTTP sous un
+        avertissement trompeur de "limite de pages atteinte").
 
+        Retry uniquement sur `GET` (idempotent) : `POST`/`EXEC`/`PUT` (création de tiers, import
+        d'écritures) ne le sont pas -- une réponse perdue après un traitement déjà effectué côté
+        Sage ne doit pas être retentée automatiquement, au risque de créer un doublon.
+        """
         attempt = 0
         while True:
             attempt += 1
             _logger.info(self._as_curl_command(method, url, json))
             try:
-                response = self.session.request(
-                    method, url, params=params, json=json, timeout=DEFAULT_TIMEOUT,
-                )
+                response = self.session.request(method, url, json=json, timeout=DEFAULT_TIMEOUT)
             except requests.RequestException as exc:
                 raise SageConnectorError(
                     "Sage API unreachable (%s %s): %s" % (method, url, exc)
@@ -150,7 +155,8 @@ class SDataClient:
                 method, url, response.status_code, response.text[:2000],
             )
 
-            if response.status_code in (429, 500, 502, 503, 504) and attempt <= MAX_RETRIES:
+            retryable = method == 'GET' and response.status_code in (429, 500, 502, 503, 504)
+            if retryable and attempt <= MAX_RETRIES:
                 _logger.info(
                     "Sage API %s on %s %s, retry %s/%s in %ss",
                     response.status_code, method, url, attempt, MAX_RETRIES, RETRY_BACKOFF_SECONDS,
@@ -165,6 +171,17 @@ class SDataClient:
                     )
                 )
             return response
+
+    def _request(self, method, entity, resource_id=None, params=None, json=None):
+        url = self._url(entity)
+        if resource_id is not None:
+            url = "%s('%s')" % (url, resource_id)
+        if params:
+            # requests/urlencode encodent l'espace en "+" par défaut -- Sage ne le décode pas (son
+            # parseur de filtre `where=` le prend au pied de la lettre, cf. erreur 400 observée sur
+            # le bac à sable), il faut du "%20" (quote_via=quote).
+            url = "%s?%s" % (url, urlencode(params, quote_via=quote))
+        return self._send(method, url, json=json)
 
     def get(self, entity, params=None):
         response = self._request('GET', entity, params=params)
@@ -182,14 +199,11 @@ class SDataClient:
         next_url = data.get('$nextUrl') if isinstance(data, dict) else None
         pages = 1
         while next_url and pages < max_pages:
-            _logger.info(self._as_curl_command('GET', next_url, None))
-            response = self.session.request('GET', next_url, timeout=DEFAULT_TIMEOUT)
-            _logger.info(
-                "Sage API response: GET %s -> %s\n%s",
-                next_url, response.status_code, response.text[:2000],
-            )
-            if not response.ok:
-                break
+            # Passe par `_send` (même retry/gestion d'erreur que la première page) au lieu d'un
+            # appel direct à `self.session.request` -- une erreur HTTP sur une page suivante lève
+            # maintenant `SageConnectorError` comme la première page, au lieu d'être masquée sous
+            # un avertissement générique de "limite de pages atteinte".
+            response = self._send('GET', next_url)
             data = response.json() if response.content else {}
             resources.extend(data.get('$resources', []))
             next_url = data.get('$nextUrl')
@@ -200,17 +214,6 @@ class SDataClient:
                 "some results may be missing", max_pages, entity, params,
             )
         return resources
-
-    def create(self, entity, data):
-        response = self._request('POST', entity, json=data)
-        return response.json() if response.content else {}
-
-    def update(self, entity, resource_id, data):
-        response = self._request('PUT', entity, resource_id=resource_id, json=data)
-        return response.json() if response.content else {}
-
-    def delete(self, entity, resource_id):
-        self._request('DELETE', entity, resource_id=resource_id)
 
     def batch(self, operations, atomic=True):
         """Send a `$batch` request: multiple SData operations in one call.

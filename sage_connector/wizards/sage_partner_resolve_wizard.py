@@ -36,15 +36,16 @@ class SagePartnerResolveWizard(models.TransientModel):
         domain="[('wizard_id', '=', id)]",
     )
     new_code = fields.Char(string="Code du nouveau tiers")
+    # Vide = rien ne manque = on peut valider -- un booléen séparé serait entièrement dérivable de
+    # ce champ (`not missing_required_label`), la vue s'y réfère directement plutôt que de
+    # maintenir les deux en parallèle.
     missing_required_label = fields.Char(compute='_compute_missing_required_label')
-    can_validate = fields.Boolean(compute='_compute_missing_required_label')
 
     @api.depends('mode', 'partner_id.siret', 'partner_id.siren', 'partner_id.vat')
     def _compute_missing_required_label(self):
         for wizard in self:
             missing = wizard._sage_missing_required_fields()
             wizard.missing_required_label = ", ".join(missing) if missing else False
-            wizard.can_validate = not missing
 
     def _sage_missing_required_fields(self):
         self.ensure_one()
