@@ -339,6 +339,24 @@ class TestSageConnector(TransactionCase):
         self.assertEqual(partner.sage_client_code, '411TOTAL')
         self.assertFalse(partner.sage_vendor_code)
 
+    def test_search_cascade_auto_falls_back_to_siren_when_siret_finds_nothing(self):
+        partner = self.env['res.partner'].create({
+            'name': 'Tiers Sage Test', 'siret': '51327262500049', 'siren': '513272625',
+        })
+        captured_wheres = []
+
+        def fake_get_all_pages(self, entity, params=None):
+            captured_wheres.append(params['where'])
+            if 'noSiren' in params['where'] and 'TClient' in entity:
+                return [{'Caption': '411SIREN'}]
+            return []
+        fake_client = type('FakeClient', (), {'get_all_pages': fake_get_all_pages})()
+        with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
+            partner._sage_search_cascade_auto()
+        self.assertEqual(partner.sage_client_code, '411SIREN')
+        self.assertTrue(any('codeSIRET' in w for w in captured_wheres))
+        self.assertTrue(any('noSiren' in w for w in captured_wheres))
+
     def test_search_by_name_uses_raison_sociale_for_company(self):
         partner = self.env['res.partner'].create({'name': 'Tiers Sage Test Raison Sociale', 'is_company': True})
         captured = {}
@@ -357,6 +375,44 @@ class TestSageConnector(TransactionCase):
             partner.write({'city': 'Lyon', 'name': 'Tiers Sage Test Renommé'})
         mocked_client_cls.assert_not_called()
 
+    def test_build_payload_includes_siret_siren_vat_when_filled(self):
+        partner = self.env['res.partner'].create({
+            'name': 'Tiers Sage Test', 'siret': '51327262500049', 'siren': '513272625',
+            'vat': 'FR20513272625',
+        })
+        payload = partner._sage_build_payload()
+        self.assertEqual(payload['codeSIRET'], '51327262500049')
+        self.assertEqual(payload['noSiren'], '513272625')
+        self.assertEqual(payload['numeroTVACEE'], 'FR20513272625')
+
+    def test_build_payload_omits_siret_siren_vat_when_empty(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
+        payload = partner._sage_build_payload()
+        self.assertNotIn('codeSIRET', payload)
+        self.assertNotIn('noSiren', payload)
+        self.assertNotIn('numeroTVACEE', payload)
+
+    def test_create_role_sends_siret_siren_vat_in_batch_operation(self):
+        partner = self.env['res.partner'].create({
+            'name': 'Tiers Sage Test', 'siret': '51327262500049', 'siren': '513272625',
+            'vat': 'FR20513272625',
+        })
+        captured = {}
+
+        def fake_batch(self, operations):
+            captured['operations'] = operations
+            return {}
+        fake_client = type('FakeClient', (), {
+            'batch': fake_batch,
+            'get_all_pages': lambda self, entity, params=None: [{'Caption': '411TOTAL'}],
+        })()
+        with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
+            partner._sage_create_role('client', code='411TOTAL')
+        create_op = captured['operations'][0]
+        self.assertEqual(create_op['codeSIRET'], '51327262500049')
+        self.assertEqual(create_op['noSiren'], '513272625')
+        self.assertEqual(create_op['numeroTVACEE'], 'FR20513272625')
+
     def test_create_role_rereads_actual_caption(self):
         partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
         fake_client = type('FakeClient', (), {
@@ -368,141 +424,193 @@ class TestSageConnector(TransactionCase):
         self.assertEqual(code, '411TOTAL-REPREFIXE')
         self.assertEqual(partner.sage_client_code, '411TOTAL-REPREFIXE')
 
-    def test_action_sage_resolve_notifies_when_already_resolved(self):
+    def test_create_role_explains_unshared_tiers_on_duplicate_code(self):
         partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
-        partner.write({'sage_client_code': '411TOTAL', 'sage_vendor_code': '401TOTAL'})
-        result = partner.action_sage_resolve()
-        self.assertEqual(result.get('tag'), 'display_notification')
 
-    def test_action_sage_resolve_creates_wizard_with_candidates(self):
-        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test', 'is_company': True})
-        fake_client = type('FakeClient', (), {
-            'get_all_pages': lambda self, entity, params=None: (
-                [{'Caption': '411CANDIDATE', 'raisonSociale': 'Tiers Sage Test'}]
-                if 'TClient' in entity else []
-            ),
-        })()
+        def raise_duplicate(self, operations):
+            raise SageConnectorError(
+                'Sage API error 400 on POST .../$batch: [{"message": '
+                '"Impossible de créer le tiers \\"401TOTAL\\". Un tiers possédant le même code '
+                'existe déjà."}]'
+            )
+        fake_client = type('FakeClient', (), {'batch': raise_duplicate})()
         with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
-            action = partner.action_sage_resolve()
-        self.assertEqual(action.get('res_model'), 'sage.partner.resolve.batch.wizard')
-        batch = self.env['sage.partner.resolve.batch.wizard'].browse(action['res_id'])
-        client_lines = batch.line_ids.filtered(lambda w: w.role == 'client')
-        self.assertEqual(len(client_lines), 1)
-        self.assertEqual(client_lines.code, '411CANDIDATE')
-        self.assertFalse(client_lines.is_create_option)
-        vendor_lines = batch.line_ids.filtered(lambda w: w.role == 'vendor')
-        self.assertEqual(len(vendor_lines), 1)
-        self.assertTrue(vendor_lines.is_create_option)
-        self.assertTrue(vendor_lines.new_code)
+            with self.assertRaises(UserError) as ctx:
+                partner._sage_create_role('vendor', code='401TOTAL')
+        self.assertIn('partagé', str(ctx.exception))
+        self.assertFalse(partner.sage_vendor_code)
 
-    def test_action_sage_resolve_shows_resolved_role_as_a_grayed_line(self):
+    def test_create_role_shows_generic_message_for_unrecognized_sage_errors(self):
+        # Même un diagnostic Sage qu'on ne reconnaît pas (ou si le texte évolue un jour) doit
+        # ressortir comme un message propre pour l'utilisateur -- jamais la trace technique brute.
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
+
+        def raise_other(self, operations):
+            raise SageConnectorError('Sage API error 400 on POST .../$batch: autre diagnostic')
+        fake_client = type('FakeClient', (), {'batch': raise_other})()
+        with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
+            with self.assertRaises(UserError) as ctx:
+                partner._sage_create_role('vendor', code='401TOTAL')
+        self.assertNotIsInstance(ctx.exception, SageConnectorError)
+        self.assertIn('401TOTAL', str(ctx.exception))
+
+    def test_resolve_client_notifies_when_already_resolved_and_confirmed(self):
         partner = self.env['res.partner'].create({
-            'name': 'Tiers Sage Test', 'sage_client_code': '411DEJA', 'is_company': True,
+            'name': 'Tiers Sage Test', 'siret': '51327262500049', 'sage_client_code': '411TOTAL',
         })
         fake_client = type('FakeClient', (), {
-            'get_all_pages': lambda self, entity, params=None: [],
+            'get_all_pages': lambda self, entity, params=None: [{'Caption': '411TOTAL'}],
         })()
         with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
-            action = partner.action_sage_resolve()
-        batch = self.env['sage.partner.resolve.batch.wizard'].browse(action['res_id'])
-        client_lines = batch.line_ids.filtered(lambda w: w.role == 'client')
-        self.assertTrue(client_lines.resolved)
-        self.assertEqual(client_lines.code, '411DEJA')
+            result = partner.action_sage_resolve_client()
+        self.assertEqual(result['params']['type'], 'success')
+        self.assertEqual(partner.sage_client_code, '411TOTAL')
 
-    def test_action_sage_resolve_warns_without_overwriting_on_siret_mismatch(self):
-        # Seul le rôle fournisseur manque au départ -- le rôle client, déjà résolu, est quand même
-        # revérifié par la cascade : Sage renvoie un code différent, une alerte doit le signaler
-        # sans jamais écraser '411DEJA'. Le rôle fournisseur, lui, se remplit via la cascade.
+    def test_resolve_vendor_fills_silently_on_single_exact_match(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test', 'siret': '51327262500049'})
+        fake_client = type('FakeClient', (), {
+            'get_all_pages': lambda self, entity, params=None: [{'Caption': '401TOTAL'}],
+        })()
+        with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
+            result = partner.action_sage_resolve_vendor()
+        self.assertEqual(result['params']['type'], 'success')
+        self.assertEqual(partner.sage_vendor_code, '401TOTAL')
+
+    def test_resolve_client_warns_without_overwriting_on_mismatch(self):
         partner = self.env['res.partner'].create({
             'name': 'Tiers Sage Test', 'siret': '51327262500049', 'sage_client_code': '411DEJA',
         })
         fake_client = type('FakeClient', (), {
+            'get_all_pages': lambda self, entity, params=None: [{'Caption': '411AUTRECODE'}],
+        })()
+        with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
+            result = partner.action_sage_resolve_client()
+        self.assertEqual(result['params']['type'], 'warning')
+        self.assertEqual(partner.sage_client_code, '411DEJA')
+
+    def test_resolve_client_opens_choose_wizard_on_ambiguous_match(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test', 'is_company': True})
+        fake_client = type('FakeClient', (), {
             'get_all_pages': lambda self, entity, params=None: (
-                [{'Caption': '411AUTRECODE'}] if 'TClient' in entity else [{'Caption': '401NOUVEAU'}]
+                [{'Caption': '411A', 'raisonSociale': 'A'}, {'Caption': '411B', 'raisonSociale': 'B'}]
+                if 'TClient' in entity else []
             ),
         })()
         with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
-            result = partner.action_sage_resolve()
-        self.assertEqual(result['params']['type'], 'warning')
-        self.assertEqual(partner.sage_client_code, '411DEJA')
-        self.assertEqual(partner.sage_vendor_code, '401NOUVEAU')
+            action = partner.action_sage_resolve_client()
+        self.assertEqual(action.get('res_model'), 'sage.partner.resolve.wizard')
+        wizard = self.env['sage.partner.resolve.wizard'].browse(action['res_id'])
+        self.assertEqual(wizard.mode, 'choose')
+        self.assertEqual(len(wizard.candidate_ids), 2)
+        self.assertFalse(partner.sage_client_code)
 
-    def test_batch_action_validate_attaches_selected_candidate_and_creates_other_role(self):
+    def test_resolve_vendor_opens_create_wizard_when_nothing_found(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test', 'is_company': True})
+        fake_client = type('FakeClient', (), {
+            'get_all_pages': lambda self, entity, params=None: [],
+        })()
+        with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
+            action = partner.action_sage_resolve_vendor()
+        wizard = self.env['sage.partner.resolve.wizard'].browse(action['res_id'])
+        self.assertEqual(wizard.mode, 'create')
+        self.assertFalse(wizard.candidate_ids)
+        self.assertTrue(wizard.new_code)
+
+    def test_wizard_validate_choose_writes_selected_code(self):
         partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
-        batch = self.env['sage.partner.resolve.batch.wizard'].create({
-            'line_ids': [
-                (0, 0, {
-                    'partner_id': partner.id, 'role': 'client',
-                    'code': '411EXISTANT', 'name': 'Tiers Sage Test', 'selected': True,
-                }),
-                (0, 0, {
-                    'partner_id': partner.id, 'role': 'vendor', 'is_create_option': True,
-                    'new_code': '401NOUVEAU', 'selected': True,
-                }),
-            ],
+        wizard = self.env['sage.partner.resolve.wizard'].create({
+            'partner_id': partner.id, 'role': 'client', 'mode': 'choose',
+            'candidate_ids': [(0, 0, {'code': '411EXISTANT', 'name': 'Tiers Sage Test'})],
+        })
+        wizard.selected_candidate_id = wizard.candidate_ids
+        result = wizard.action_validate()
+        self.assertEqual(partner.sage_client_code, '411EXISTANT')
+        self.assertEqual(result.get('type'), 'ir.actions.act_window_close')
+
+    def test_wizard_validate_choose_requires_a_selection(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
+        wizard = self.env['sage.partner.resolve.wizard'].create({
+            'partner_id': partner.id, 'role': 'client', 'mode': 'choose',
+            'candidate_ids': [(0, 0, {'code': '411EXISTANT', 'name': 'Tiers Sage Test'})],
+        })
+        with self.assertRaises(UserError):
+            wizard.action_validate()
+
+    def test_wizard_validate_create_calls_sage_create_role(self):
+        partner = self.env['res.partner'].create({
+            'name': 'Tiers Sage Test', 'siret': '51327262500049', 'siren': '513272625',
+            'vat': 'FR20513272625',
+        })
+        wizard = self.env['sage.partner.resolve.wizard'].create({
+            'partner_id': partner.id, 'role': 'vendor', 'mode': 'create', 'new_code': '401NOUVEAU',
         })
         fake_client = type('FakeClient', (), {
             'batch': lambda self, operations: {},
             'get_all_pages': lambda self, entity, params=None: [{'Caption': '401NOUVEAU'}],
         })()
         with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
-            result = batch.action_validate()
-        self.assertEqual(partner.sage_client_code, '411EXISTANT')
+            result = wizard.action_validate()
         self.assertEqual(partner.sage_vendor_code, '401NOUVEAU')
         self.assertEqual(result.get('type'), 'ir.actions.act_window_close')
 
-    def test_batch_action_validate_ignores_unselected_lines(self):
-        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
-        batch = self.env['sage.partner.resolve.batch.wizard'].create({
-            'line_ids': [(0, 0, {
-                'partner_id': partner.id, 'role': 'client',
-                'code': '411CANDIDATE', 'name': 'Tiers Sage Test', 'selected': False,
-            })],
+    def test_wizard_validate_create_requires_a_new_code(self):
+        partner = self.env['res.partner'].create({
+            'name': 'Tiers Sage Test', 'siret': '51327262500049', 'siren': '513272625',
+            'vat': 'FR20513272625',
         })
-        batch.action_validate()
-        self.assertFalse(partner.sage_client_code)
-
-    def test_batch_action_validate_blocks_more_than_one_selected_per_role(self):
-        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
-        batch = self.env['sage.partner.resolve.batch.wizard'].create({
-            'line_ids': [
-                (0, 0, {
-                    'partner_id': partner.id, 'role': 'client',
-                    'code': '411A', 'name': 'A', 'selected': True,
-                }),
-                (0, 0, {
-                    'partner_id': partner.id, 'role': 'client',
-                    'code': '411B', 'name': 'B', 'selected': True,
-                }),
-            ],
-        })
-        with self.assertRaises(UserError):
-            batch.action_validate()
-        self.assertFalse(partner.sage_client_code)
-
-    def test_batch_action_validate_blocked_if_role_already_resolved(self):
-        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test', 'sage_client_code': '411DEJA'})
-        batch = self.env['sage.partner.resolve.batch.wizard'].create({
-            'line_ids': [(0, 0, {
-                'partner_id': partner.id, 'role': 'client',
-                'code': '411AUTRE', 'name': 'Tiers Sage Test', 'selected': True,
-            })],
-        })
-        with self.assertRaises(UserError):
-            batch.action_validate()
-        self.assertEqual(partner.sage_client_code, '411DEJA')
-
-    def test_batch_action_validate_requires_a_new_code_for_create_option(self):
-        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
-        batch = self.env['sage.partner.resolve.batch.wizard'].create({
-            'line_ids': [(0, 0, {
-                'partner_id': partner.id, 'role': 'vendor', 'is_create_option': True, 'selected': True,
-            })],
+        wizard = self.env['sage.partner.resolve.wizard'].create({
+            'partner_id': partner.id, 'role': 'vendor', 'mode': 'create',
         })
         with patch.object(res_partner_module, 'SDataClient') as mocked_client_cls:
             with self.assertRaises(UserError):
-                batch.action_validate()
+                wizard.action_validate()
         mocked_client_cls.assert_not_called()
+
+    def test_wizard_create_blocked_when_siret_siren_vat_missing(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
+        wizard = self.env['sage.partner.resolve.wizard'].create({
+            'partner_id': partner.id, 'role': 'vendor', 'mode': 'create', 'new_code': '401NOUVEAU',
+        })
+        self.assertFalse(wizard.can_validate)
+        self.assertIn('SIRET', wizard.missing_required_label)
+        self.assertIn('SIREN', wizard.missing_required_label)
+        self.assertIn('TVA intracommunautaire', wizard.missing_required_label)
+        with patch.object(res_partner_module, 'SDataClient') as mocked_client_cls:
+            with self.assertRaises(UserError):
+                wizard.action_validate()
+        mocked_client_cls.assert_not_called()
+        self.assertFalse(partner.sage_vendor_code)
+
+    def test_wizard_create_allowed_once_siret_siren_vat_filled(self):
+        partner = self.env['res.partner'].create({
+            'name': 'Tiers Sage Test', 'siret': '51327262500049', 'siren': '513272625',
+            'vat': 'FR20513272625',
+        })
+        wizard = self.env['sage.partner.resolve.wizard'].create({
+            'partner_id': partner.id, 'role': 'vendor', 'mode': 'create', 'new_code': '401NOUVEAU',
+        })
+        self.assertTrue(wizard.can_validate)
+        self.assertFalse(wizard.missing_required_label)
+
+    def test_wizard_choose_mode_ignores_missing_siret_siren_vat(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
+        wizard = self.env['sage.partner.resolve.wizard'].create({
+            'partner_id': partner.id, 'role': 'client', 'mode': 'choose',
+            'candidate_ids': [(0, 0, {'code': '411EXISTANT', 'name': 'Tiers Sage Test'})],
+        })
+        self.assertTrue(wizard.can_validate)
+        self.assertFalse(wizard.missing_required_label)
+
+    def test_wizard_validate_blocked_if_role_already_resolved(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test', 'sage_client_code': '411DEJA'})
+        wizard = self.env['sage.partner.resolve.wizard'].create({
+            'partner_id': partner.id, 'role': 'client', 'mode': 'choose',
+            'candidate_ids': [(0, 0, {'code': '411AUTRE', 'name': 'Tiers Sage Test'})],
+        })
+        wizard.selected_candidate_id = wizard.candidate_ids
+        with self.assertRaises(UserError):
+            wizard.action_validate()
+        self.assertEqual(partner.sage_client_code, '411DEJA')
 
     def test_request_encodes_spaces_as_percent20_not_plus(self):
         self.company.write({
@@ -512,7 +620,7 @@ class TestSageConnector(TransactionCase):
         })
         client = SDataClient(self.env)
         fake_response = type('FakeResponse', (), {
-            'ok': True, 'status_code': 200, 'content': b'{}', 'json': lambda self: {},
+            'ok': True, 'status_code': 200, 'content': b'{}', 'text': '{}', 'json': lambda self: {},
         })()
         with patch.object(type(client.session), 'request', return_value=fake_response) as mocked_request:
             client.get('gentiers/TClient', params={'where': "tiers.codeSIRET eq '123'"})
@@ -545,6 +653,38 @@ class TestSageConnector(TransactionCase):
             with self.assertRaises(SageConnectorError) as ctx:
                 client.batch([{'$httpMethod': 'POST'}])
         self.assertIn('Le solde de la pièce doit être nul.', str(ctx.exception))
+
+    def test_batch_error_surfaces_diagnosis_nested_under_batch_key(self):
+        self.company.write({
+            'sage_api_endpoint': 'https://sage.example.com',
+            'sage_api_token': 'fake-token',
+            'sage_contract_code': 'MC2I',
+        })
+        client = SDataClient(self.env)
+        # Reproduit un rollback de $batch (toutes les opérations réussies individuellement, mais
+        # annulées globalement) : le diagnostic est niché sous une clé "$batch" dédiée, pas sous
+        # "$" ni dans une ressource en échec (toutes montrent 201/200).
+        body = {
+            '$resources': [
+                {'$httpStatus': 201, '$httpMethod': 'POST'},
+                {'$httpStatus': 200, '$httpMethod': 'EXEC'},
+            ],
+            '$batch': {
+                '$httpStatus': 400, '$httpMessage': 'ROLLBACK',
+                '$': {'$diagnoses': [{
+                    'severity': 'error',
+                    'message': 'Un tiers possédant le même code existe déjà.',
+                }]},
+            },
+        }
+        fake_response = type('FakeResponse', (), {
+            'ok': False, 'status_code': 400,
+            'text': json.dumps(body),
+        })()
+        with patch.object(type(client.session), 'request', return_value=fake_response):
+            with self.assertRaises(SageConnectorError) as ctx:
+                client.batch([{'$httpMethod': 'POST'}])
+        self.assertIn('existe déjà', str(ctx.exception))
 
     def test_request_logs_a_copy_pasteable_curl_command_with_token_masked(self):
         self.company.write({

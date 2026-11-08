@@ -1,75 +1,94 @@
-from odoo import _, fields, models
+from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+
+# Champs Odoo requis avant de pouvoir créer un tiers sur Sage (§8.2) -- en plus d'y aider la
+# cascade de recherche future (§8.1), les envoyer vide créerait une fiche Sage incomplète.
+_SAGE_CREATE_REQUIRED_FIELDS = [
+    ('siret', "SIRET"),
+    ('siren', "SIREN"),
+    ('vat', "TVA intracommunautaire"),
+]
 
 
 class SagePartnerResolveWizard(models.TransientModel):
-    """Une ligne du wizard de résolution (§8.0 point 2) : soit un candidat trouvé sur Sage (par
-    SIRET/TVA en écart, ou par recherche nominative) pour un rôle (client/fournisseur) d'un tiers,
-    soit l'option "créer un nouveau tiers" quand aucun candidat n'a été trouvé, soit une ligne
-    informative pour un rôle déjà résolu (non sélectionnable). Jamais de rattachement automatique
-    sur un simple match de nom -- toujours une confirmation humaine ici (§8.1 critère 4).
+    """Un seul rôle (client ou fournisseur) d'un seul tiers (§8.0 point 2), déclenché quand la
+    cascade de recherche (`res.partner._sage_resolve_role`) ne peut pas conclure toute seule :
+    soit plusieurs candidats trouvés (`mode='choose'`), soit aucun (`mode='create'`).
     """
     _name = 'sage.partner.resolve.wizard'
-    _description = "Ligne de résolution d'un tiers sur Sage"
+    _description = "Résolution d'un tiers sur Sage"
 
-    batch_id = fields.Many2one('sage.partner.resolve.batch.wizard', ondelete='cascade')
     partner_id = fields.Many2one('res.partner', required=True, readonly=True)
     role = fields.Selection([
         ('client', 'Client'),
         ('vendor', 'Fournisseur'),
     ], required=True, readonly=True)
-    resolved = fields.Boolean(
-        readonly=True,
-        help="Ce rôle est déjà résolu sur Sage -- ligne informative, non sélectionnable.",
+    mode = fields.Selection([
+        ('choose', 'Choisir un candidat'),
+        ('create', 'Créer un nouveau tiers'),
+    ], required=True, readonly=True)
+    candidate_ids = fields.One2many(
+        'sage.partner.resolve.wizard.candidate', 'wizard_id', readonly=True,
+        string="Tiers trouvés sur Sage",
     )
-    is_create_option = fields.Boolean(readonly=True, help="Option \"créer un nouveau tiers\".")
-    code = fields.Char(readonly=True, string="Code Sage")
-    name = fields.Char(readonly=True, string="Libellé")
-    new_code = fields.Char(string="Code à créer")
-    selected = fields.Boolean(string="Choisir")
+    selected_candidate_id = fields.Many2one(
+        'sage.partner.resolve.wizard.candidate', string="Rattacher ce tiers existant",
+        domain="[('wizard_id', '=', id)]",
+    )
+    new_code = fields.Char(string="Code du nouveau tiers")
+    missing_required_label = fields.Char(compute='_compute_missing_required_label')
+    can_validate = fields.Boolean(compute='_compute_missing_required_label')
 
+    @api.depends('mode', 'partner_id.siret', 'partner_id.siren', 'partner_id.vat')
+    def _compute_missing_required_label(self):
+        for wizard in self:
+            missing = wizard._sage_missing_required_fields()
+            wizard.missing_required_label = ", ".join(missing) if missing else False
+            wizard.can_validate = not missing
 
-class SagePartnerResolveBatchWizard(models.TransientModel):
-    """Conteneur affiché par `res.partner.action_sage_resolve` (§8.0 point 2) : un formulaire
-    classique (pied de page Valider/Annuler), une ligne par candidat/option trouvée -- qu'il y en
-    ait une ou plusieurs par rôle, toujours le même formulaire.
-    """
-    _name = 'sage.partner.resolve.batch.wizard'
-    _description = "Résolution des tiers sur Sage"
-
-    line_ids = fields.One2many('sage.partner.resolve.wizard', 'batch_id', string="Lignes")
+    def _sage_missing_required_fields(self):
+        self.ensure_one()
+        if self.mode != 'create':
+            return []
+        return [label for field_name, label in _SAGE_CREATE_REQUIRED_FIELDS if not self.partner_id[field_name]]
 
     def action_validate(self):
-        pairs = {(line.partner_id, line.role) for line in self.line_ids if not line.resolved}
-        for partner, role in pairs:
-            lines = self.line_ids.filtered(
-                lambda l, partner=partner, role=role: l.partner_id == partner and l.role == role and not l.resolved
-            )
-            selected = lines.filtered('selected')
-            if len(selected) > 1:
-                raise UserError(_(
-                    "%(partner)s (%(role)s) : un seul tiers peut être sélectionné à la fois.",
-                    partner=partner.display_name, role=dict(lines._fields['role'].selection)[role],
-                ))
-            if not selected:
-                continue
+        self.ensure_one()
+        field_name = 'sage_client_code' if self.role == 'client' else 'sage_vendor_code'
+        if self.partner_id[field_name]:
+            raise UserError(_(
+                "%(partner)s a déjà un code sur Sage pour ce rôle -- probablement résolu "
+                "entre-temps. Fermez ce wizard sans le valider.",
+                partner=self.partner_id.display_name,
+            ))
 
-            field_name = 'sage_client_code' if role == 'client' else 'sage_vendor_code'
-            if partner[field_name]:
+        if self.mode == 'choose':
+            if not self.selected_candidate_id:
+                raise UserError(_("Sélectionnez un tiers dans la liste."))
+            self.partner_id.write({field_name: self.selected_candidate_id.code})
+        else:
+            missing = self._sage_missing_required_fields()
+            if missing:
                 raise UserError(_(
-                    "%(partner)s a déjà un code %(role)s sur Sage -- probablement résolu "
-                    "entre-temps. Fermez ce wizard sans le valider.",
-                    partner=partner.display_name, role=dict(lines._fields['role'].selection)[role],
+                    "Impossible de créer ce tiers sur Sage : %(missing)s manquant(s) sur sa fiche "
+                    "Odoo. Complétez la fiche avant de réessayer.",
+                    missing=", ".join(missing),
                 ))
-
-            if selected.is_create_option:
-                if not selected.new_code:
-                    raise UserError(_(
-                        "Saisissez un code pour créer le tiers de %(partner)s.",
-                        partner=partner.display_name,
-                    ))
-                partner._sage_create_role(role, code=selected.new_code)
-            else:
-                partner.write({field_name: selected.code})
+            if not self.new_code:
+                raise UserError(_("Saisissez un code pour créer le tiers."))
+            self.partner_id._sage_create_role(self.role, code=self.new_code)
 
         return {'type': 'ir.actions.act_window_close'}
+
+
+class SagePartnerResolveWizardCandidate(models.TransientModel):
+    _name = 'sage.partner.resolve.wizard.candidate'
+    _description = "Candidat tiers Sage trouvé par la cascade de recherche"
+
+    wizard_id = fields.Many2one('sage.partner.resolve.wizard', required=True, ondelete='cascade')
+    code = fields.Char(readonly=True)
+    name = fields.Char(readonly=True)
+
+    def _compute_display_name(self):
+        for candidate in self:
+            candidate.display_name = "%s (%s)" % (candidate.code, candidate.name) if candidate.name else candidate.code

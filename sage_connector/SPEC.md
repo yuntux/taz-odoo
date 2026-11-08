@@ -66,6 +66,27 @@ modifie ou supprime manuellement une écriture envoyée :
   type de risque de données incomplètes à garder en tête pour la TVA intracom et les autres critères
   de la cascade (§8.1) — rien ne garantit qu'un critère soit renseigné de façon homogène sur les deux
   `TTiers` d'un même tiers.
+- **TODO — question à poser à MC2I : logique de partage des tiers.** Constaté en bac à sable
+  (2026-11-08) : pour Dior, il existe **un tiers client `411DIOR`**, partagé "pour les sociétés de
+  l'activité MC2I_TIERS" (`$shareInfo: "MC2I_TIERS"`), **ET séparément un tiers client
+  `411CHRISTIANDIORCOUTURE`** (non partagé) **avec son pendant fournisseur
+  `401CHRISTIANDIORCOUTURE`** (lui aussi non partagé, utilisé jusqu'ici comme code de test dans ce
+  connecteur). Quelle est la logique de partage des tiers entre sociétés du dossier MC2I (qu'est-ce
+  qui est partagé, par qui, pourquoi), et lequel de ces tiers doit être utilisé/créé par le
+  connecteur pour Tasmane — le tiers partagé existant, ou un tiers propre à Tasmane ?
+  **Question corollaire** : à la création d'un tiers par API (`$shareLevel: 2` actuellement envoyé
+  tel quel dans `res_partner.py::_sage_create_role`, repris de l'exemple officiel sans l'avoir
+  questionné), faut-il préciser une modalité de partage particulière (niveau, activité
+  `MC2I_TIERS` ou autre) pour que les tiers créés par le connecteur suivent la même logique que
+  `411DIOR`, ou est-ce volontairement non partagé par défaut ?
+  **Autre question corollaire** : pourquoi le tiers partagé `411DIOR` porte le **SIREN** mais pas le
+  **SIRET** ? (le SIRET est le critère utilisé par la cascade §8.1, donc cette absence empêche de
+  retrouver ce tiers par ce critère).
+- **Troncature du SIRET à la création** (constaté le 2026-11-08, cf. §7bis.1) : Sage tronque
+  systématiquement le `codeSIRET` envoyé à ses 9 premiers chiffres (= le SIREN) lors de la création
+  d'un tiers par API, quel que soit l'emplacement du champ dans le payload (racine ou
+  `sitesList[0].adresse`, testés tous les deux). Existe-t-il un autre champ, ou une autre modalité
+  d'appel, permettant d'enregistrer le SIRET complet (14 chiffres) sur un tiers créé par API ?
 - Import d'écritures : 3 étapes dans un seul `$batch` —
   1. `POST cptimport/tsessionimport` (session, avec `Caption` et éventuellement `CompteEquilibre`)
   2. `POST cptimport/timportecritures` × N (une par ligne), chacune liée à la session via
@@ -645,8 +666,9 @@ pour le `$batch` complet de création (session unique POST + EXEC `creerClient`/
 | `sitesList[0].adresse.ville` | `partner.city` | |
 | `sitesList[0].adresse.codePostal` | `partner.zip` | |
 | `sitesList[0].adresse.pays` | `{"$url": "TPays(code eq '<code pays Sage>')"}` | *(TODO : table de correspondance code pays Odoo (ISO alpha-2) → code pays Sage (`"FRF"` pour la France, confirmé par l'exemple officiel ; le reste à vérifier au cas par cas))* |
-| `numeroTVACEE` | `partner.vat` (TVA intracom) | Confirmé accepté en écriture, au même endroit qu'en lecture (sur `TTiers`). |
-| `codeSIRET` | `partner.siret` | Confirmé accepté en écriture, sur `TTiers` directement (comme en lecture). |
+| `codeSIRET` | `partner.siret` | Envoyé uniquement si renseigné côté Odoo (`_sage_build_payload`, implémenté le 2026-11-08) — absent du payload sinon, pas de valeur vide envoyée. **En pratique ce champ (ainsi que `noSiren` et `numeroTVACEE` ci-dessous) est toujours renseigné lors d'une création**, puisque le wizard de création bloque la validation si l'un des trois est vide sur la fiche Odoo (bandeau d'avertissement + bouton "Valider" inactif — cf. **Pré-requis bloquant avant la création** en §8.2). Ce contrôle ne s'applique pas au `PUT` de mise à jour (§7bis.3), seulement à la création initiale. **Limitation Sage confirmée (2026-11-08)** : à la création, Sage **tronque systématiquement le SIRET envoyé à ses 9 premiers chiffres** (= le SIREN), quel que soit le SIRET réellement transmis, et quel que soit son emplacement dans le payload (testé à la racine du `TTiers` *et* dans `sitesList[0].adresse` — même résultat dans les deux cas). Constat fait en relisant en direct (lecture seule) le tiers créé `401CHRISTIANDIORCOUTURE_TER`/`_QUATER` : payload envoyé avec `codeSIRET = "61203583200049"`, valeur relue sur Sage = `codeSIRET = codeSIRET_Exp = "612035832"` (= `noSiren`). `noSiren` et `numeroTVACEE` envoyés dans le même `$batch`, eux, sont bien conservés tels quels. Les champs `estCodeSIRETValide`/`peutCreerEtabAPISiren` présents sur la réponse suggèrent que Sage recalcule/valide le SIRET à partir du SIREN (résolution d'établissement) au lieu de conserver la valeur transmise — comportement côté Sage, pas un défaut de notre payload. **Ajouté à la liste des questions pour MC2I (§2)** : demander si un autre champ ou mécanisme permet d'enregistrer le SIRET complet (14 chiffres) sur un tiers. |
+| `noSiren` | `partner.siren` | Même champ que le critère de recherche SIREN (§8.1). **Envoyé uniquement si renseigné**, même logique que `codeSIRET`. |
+| `numeroTVACEE` | `partner.vat` (TVA intracom) | Confirmé accepté en écriture, au même endroit qu'en lecture (sur `TTiers`). **Envoyé uniquement si renseigné**, même logique que `codeSIRET`. |
 
 ### 7bis.2 Exemple — création (`TOTAL`, rôle Client)
 
@@ -696,16 +718,18 @@ l'exigence "jamais de création silencieuse" (§8.2) implique de toute façon un
 
 1. **Automatique, à la validation d'un `account.move`** (dans le contrôle bloquant du §6.1, point
    1) : si le code pertinent (`sage_client_code` ou `sage_vendor_code` selon `move_type`) est vide,
-   lancer **uniquement la cascade de recherche (§8.1)**, silencieusement :
-   - trouvé → remplir le champ, continuer la validation normalement ;
-   - rien trouvé (ou nécessite une validation utilisateur, cf. critère 4 de §8.1) → **ne pas**
-     proposer la création ici ; bloquer la validation avec un message explicite qui renvoie vers le
-     bouton manuel (point 2), ex. *"Aucun code Sage trouvé pour ce tiers. Ouvrez sa fiche et utilisez
-     le bouton 'Rechercher / créer sur Sage' avant de valider cette facture."*
-2. **Manuel, bouton sur la fiche `res.partner`** ("Rechercher / créer sur Sage", ou deux boutons
-   séparés recherche/création) : lance la cascade (§8.1) puis, si rien n'est trouvé, propose le
-   wizard de création (§8.2) avec confirmation explicite de l'utilisateur. C'est le **seul** chemin
-   qui peut aboutir à une création de tiers côté Sage.
+   lancer **uniquement la cascade des critères exacts** (SIRET/SIREN/TVA — jamais la recherche par
+   nom, cf. `_sage_search_cascade_auto`), silencieusement :
+   - trouvé (un seul résultat) → remplir le champ, continuer la validation normalement ;
+   - rien trouvé, ou ambigu (plusieurs résultats) → **ne pas** proposer la création ici ; bloquer la
+     validation avec un message explicite qui renvoie vers le bouton manuel (point 2), ex. *"Aucun
+     code Sage trouvé pour ce tiers. Ouvrez sa fiche et utilisez le bouton 'Rechercher / créer le
+     code [client/fournisseur]' avant de valider cette facture."*
+2. **Manuel, deux boutons distincts sur la fiche `res.partner`** — un pour le rôle client, un pour
+   le rôle fournisseur, strictement en miroir l'un de l'autre (§8.1) : chacun lance la cascade
+   complète pour **son seul rôle** (y compris la recherche par nom en dernier recours) et, si rien
+   n'est trouvé, propose le wizard de création (§8.2) avec confirmation explicite de l'utilisateur.
+   C'est le **seul** chemin qui peut aboutir à une création de tiers côté Sage.
 
 Conséquence pratique : un utilisateur qui valide une facture pour un tiers jamais vu sur Sage doit
 d'abord passer par sa fiche contact pour la résoudre/créer, *avant* de pouvoir valider — pas de
@@ -724,55 +748,62 @@ le rôle en 2 temps (ancienne §8.2, supprimée) — interroger **directement** 
 `TFournisseur` avec le critère disponible, par jointure vers `TTiers`. Chaque requête réussie donne
 directement le code du rôle dans `Caption`.
 
-Pour un `res.partner` donné, chercher dans cet ordre, **par rôle, indépendamment** — ne pas arrêter
-toute la cascade dès qu'un rôle est trouvé, continuer les critères suivants pour le rôle encore
-manquant (cf. bizarrerie de données en §2 : un SIRET absent sur un rôle ne veut pas dire que ce rôle
-n'existe pas, juste que la donnée n'est pas renseignée dessus) :
+**Un rôle à la fois, deux boutons miroir (révisé 2026-11-08)** : le rôle Client et le rôle
+Fournisseur sont traités par deux boutons strictement indépendants sur la fiche `res.partner`
+("Rechercher / créer le code client" et "... le code fournisseur"), chacun lançant sa propre
+cascade pour son seul rôle — plus de wizard combiné sur les deux rôles à la fois (cf. bizarrerie de
+données en §2 : un SIRET absent sur un rôle ne veut pas dire que ce rôle n'existe pas, juste que la
+donnée n'est pas renseignée dessus, d'où l'intérêt de pouvoir résoudre un rôle indépendamment de
+l'autre).
 
-- dès que `sage_client_code` est trouvé, arrêter la cascade *pour le rôle Client* uniquement ;
-- dès que `sage_vendor_code` est trouvé, arrêter la cascade *pour le rôle Fournisseur* uniquement ;
-- continuer à descendre les critères suivants pour le ou les rôles encore non résolus, jusqu'au
-  dernier critère (nom) ;
-- ce n'est qu'après avoir épuisé **tous** les critères sans résultat pour un rôle donné qu'on peut
-  conclure "rôle introuvable" et passer à la création (§8.2) pour ce rôle précis.
+Pour le rôle concerné, descendre les critères dans l'ordre et **s'arrêter au premier qui renvoie
+quelque chose** (jamais ne continue au critère suivant après un résultat, même ambigu) :
 
-Grille des critères, dans l'ordre :
+- **champ déjà rempli** : ne tenter que les critères exacts (SIRET/SIREN/TVA, jamais le nom) pour
+  détecter un écart — un seul résultat identique au code existant → rien à faire ("déjà résolu") ;
+  un résultat différent → alerte, **jamais d'écrasement automatique** ; rien trouvé sur aucun des
+  trois → "déjà résolu" également (silence, pas d'anomalie à signaler) ;
+- **champ vide** : au premier critère qui renvoie un seul résultat → code écrit directement, **sans
+  wizard** (toast de confirmation) ; au premier critère qui renvoie **plusieurs** résultats → wizard
+  minimaliste de choix (§8.0 point 2) ; si aucun critère (y compris le nom, en dernier recours) ne
+  renvoie rien → wizard proposant la création (§8.2), code par défaut pré-rempli.
+
+Deux grilles distinctes selon `partner.is_company` — les trois premiers critères (SIRET/SIREN/TVA)
+sont communs aux deux (un auto-entrepreneur, personne physique, peut tout à fait avoir un SIRET),
+seul le dernier recours diffère :
+
+**Personne morale (`is_company = True`)**
 
 | Ordre | Critère Odoo | Recherche Sage | Remarque |
 |---|---|---|---|
 | 1 | `partner.siret` | `gentiers/TClient(tiers.codeSIRET eq '<siret>')` et `gentiers/TFournisseur(tiers.codeSIRET eq '<siret>')` | Confirmé fonctionnel sur les deux rôles. Interroger les deux systématiquement (le tiers peut avoir l'un, l'autre, ou les deux — cf. remarque en tête de §8). |
-| 2 | `partner.vat` (TVA intracom) | `gentiers/TClient(tiers.numeroTVACEE eq '<vat>')` et `gentiers/TFournisseur(tiers.numeroTVACEE eq '<vat>')` | Champ confirmé : `numeroTVACEE`. |
-| 3 | "matricule" (particuliers) | — | **TODO** : ni le champ Odoo ni le champ Sage ne sont identifiés. À lister comme prérequis avant implémentation (poser la question à Mercuria : existe-t-il une recherche par identité pour les personnes physiques, type INSEE/NIR, ou autre identifiant Sage ?). |
-| 4 | Nom — distinct selon `partner.is_company` | voir détail ci-dessous | Dernier recours, nom approximatif. **Validation utilisateur requise avant de rattacher automatiquement** (cf. §8.2) — un match par nom peut être un faux positif (homonymes, raisons sociales proches). |
+| 2 | `partner.siren` | `gentiers/TClient(tiers.noSiren eq '<siren>')` et `gentiers/TFournisseur(tiers.noSiren eq '<siren>')` | Champ Sage : `noSiren`. Ajouté suite au constat que le tiers partagé `411DIOR` porte le SIREN mais pas le SIRET (cf. §2) — sans ce critère, ce type de tiers reste introuvable par la cascade. |
+| 3 | `partner.vat` (TVA intracom) | `gentiers/TClient(tiers.numeroTVACEE eq '<vat>')` et `gentiers/TFournisseur(tiers.numeroTVACEE eq '<vat>')` | Champ confirmé : `numeroTVACEE`. |
+| 4 | `partner.name` (raison sociale) | `gentiers/TClient(Tiers.raisonSociale eq '<partner.name>')` et `gentiers/TFournisseur(Tiers.raisonSociale eq '<partner.name>')` | Dernier recours, nom approximatif. **Validation utilisateur requise avant de rattacher automatiquement** (cf. §8.2) — un match par nom peut être un faux positif (homonymes, raisons sociales proches). *(remplace la recherche sur `caption` prévue initialement — `raisonSociale` est le champ métier pertinent pour une société, `caption` n'étant qu'un libellé d'affichage.)* |
 
-**Détail du critère 4, selon `partner.is_company` :**
+**Personne physique (`is_company = False`)**
 
-- **Personne morale** (`is_company = True`) : recherche sur la raison sociale —
-  `gentiers/TClient(Tiers.raisonSociale eq '<partner.name>')` et
-  `gentiers/TFournisseur(Tiers.raisonSociale eq '<partner.name>')`.
-  *(remplace la recherche sur `caption` prévue initialement — `raisonSociale` est le champ métier
-  pertinent pour une société, `caption` n'étant qu'un libellé d'affichage).*
-- **Personne physique** (`is_company = False`) : recherche sur nom **et** prénom —
-  `partner.name` (nom) et `partner.first_name` (prénom, champ déjà fourni par le module
-  `taz-common`, cf. `taz-common/models/res_partner.py` — pas besoin d'installer de module
-  supplémentaire ni de scinder `name` par heuristique, point levé). `sage_connector` devra déclarer
-  `taz-common` en dépendance pour s'appuyer sur ce champ.
-  `gentiers/TClient(Tiers.nom eq '<partner.name>' and Tiers.prenom eq '<partner.first_name>')`, idem
-  `TFournisseur`. **TODO restant** : noms exacts des champs Sage (`nom`/`prenom` sont une hypothèse
-  de travail, à confirmer avec Mercuria comme le reste de la cascade §8.1).
+| Ordre | Critère Odoo | Recherche Sage | Remarque |
+|---|---|---|---|
+| 1 | `partner.siret` | `gentiers/TClient(tiers.codeSIRET eq '<siret>')` et `gentiers/TFournisseur(tiers.codeSIRET eq '<siret>')` | Idem personne morale. |
+| 2 | `partner.siren` | `gentiers/TClient(tiers.noSiren eq '<siren>')` et `gentiers/TFournisseur(tiers.noSiren eq '<siren>')` | Idem personne morale. |
+| 3 | `partner.vat` (TVA intracom) | `gentiers/TClient(tiers.numeroTVACEE eq '<vat>')` et `gentiers/TFournisseur(tiers.numeroTVACEE eq '<vat>')` | Idem personne morale. |
+| 4 | "matricule" | — | **TODO** : ni le champ Odoo ni le champ Sage ne sont identifiés. À lister comme prérequis avant implémentation (poser la question à Mercuria : existe-t-il une recherche par identité pour les personnes physiques, type INSEE/NIR, ou autre identifiant Sage ?). |
+| 5 | `partner.name` (nom) **et** `partner.first_name` (prénom) | `gentiers/TClient(Tiers.nom eq '<partner.name>' and Tiers.prenom eq '<partner.first_name>')`, idem `TFournisseur` | Dernier recours, nom approximatif, même garde-fou que pour la personne morale. `first_name` déjà fourni par le module `taz-common` (cf. `taz-common/models/res_partner.py`) — pas besoin d'installer de module supplémentaire ni de scinder `name` par heuristique. `sage_connector` déclare `taz-common` en dépendance pour s'appuyer sur ce champ. **TODO restant** : noms exacts des champs Sage (`nom`/`prenom` sont une hypothèse de travail, à confirmer avec Mercuria comme le reste de la cascade §8.1). |
 
-  **Limite connue et acceptée : sensibilité à la casse de la valeur comparée (2026-11-08).**
-  Odoo stocke les raisons sociales en majuscules (ex. `"CHRISTIAN DIOR COUTURE"`), alors que Sage
-  les enregistre en casse mixte (ex. `"Christian Dior Couture"`). Ni `eq` ni `like` ne sont
-  insensibles à la casse côté Sage pour ce champ (les deux testés en bac à sable, aucun ne trouve le
-  tiers si la casse diffère), et `tolower()`/`toupper()` ne sont pas supportés par le parseur
-  (`"BadQueryParameter"`). Conséquence acceptée : ce critère de dernier recours échouera
-  silencieusement chaque fois que la casse diffère entre Odoo et Sage — pas de correctif fiable côté
-  client identifié (une normalisation type `.title()` serait trop fragile, ex. `"MC2I"` →
-  `"Mc2I"`). Dans ce cas, l'utilisateur tombe sur l'option "créer un nouveau tiers" du wizard et peut
-  saisir manuellement le bon code s'il le connaît déjà — cohérent avec le principe existant que ce
-  critère reste de toute façon soumis à confirmation humaine (§8.1 critère 4), jamais automatique.
-  (Le préfixe de jointure `Tiers.`/`tiers.`, lui, n'a aucun impact : les deux casses fonctionnent.)
+**Limite connue et acceptée sur le critère "nom" (personne morale et personne physique), sensibilité
+à la casse de la valeur comparée (2026-11-08).** Odoo stocke les raisons sociales en majuscules
+(ex. `"CHRISTIAN DIOR COUTURE"`), alors que Sage les enregistre en casse mixte (ex.
+`"Christian Dior Couture"`). Ni `eq` ni `like` ne sont insensibles à la casse côté Sage pour ce
+champ (les deux testés en bac à sable, aucun ne trouve le tiers si la casse diffère), et
+`tolower()`/`toupper()` ne sont pas supportés par le parseur (`"BadQueryParameter"`). Conséquence
+acceptée : ce critère de dernier recours échouera silencieusement chaque fois que la casse diffère
+entre Odoo et Sage — pas de correctif fiable côté client identifié (une normalisation type
+`.title()` serait trop fragile, ex. `"MC2I"` → `"Mc2I"`). Dans ce cas, l'utilisateur tombe sur
+l'option "créer un nouveau tiers" du wizard et peut saisir manuellement le bon code s'il le connaît
+déjà — cohérent avec le principe existant que ce critère reste de toute façon soumis à confirmation
+humaine, jamais automatique. (Le préfixe de jointure `Tiers.`/`tiers.`, lui, n'a aucun impact : les
+deux casses fonctionnent.)
 
 Pour chaque rôle trouvé : `partner.sage_client_code = <Caption du TClient>` et/ou
 `partner.sage_vendor_code = <Caption du TFournisseur>`, indépendamment l'un de l'autre.
@@ -780,11 +811,15 @@ Pour chaque rôle trouvé : `partner.sage_client_code = <Caption du TClient>` et
 **URLs d'appel** (exemple fictif, tiers `TOTAL`, SIRET et TVA inventés pour l'exemple) :
 
 ```
-# Critère 1 — SIRET
+# Critère 1 — SIRET (commun aux deux grilles)
 GET {endpoint}/compta/server/sdata/MC2I/gentiers/TClient(tiers.codeSIRET eq '11122233344455')
 GET {endpoint}/compta/server/sdata/MC2I/gentiers/TFournisseur(tiers.codeSIRET eq '11122233344455')
 
-# Critère 2 — TVA intracommunautaire
+# Critère 2 — SIREN (commun aux deux grilles)
+GET {endpoint}/compta/server/sdata/MC2I/gentiers/TClient(tiers.noSiren eq '111222333')
+GET {endpoint}/compta/server/sdata/MC2I/gentiers/TFournisseur(tiers.noSiren eq '111222333')
+
+# Critère 3 — TVA intracommunautaire (commun aux deux grilles)
 GET {endpoint}/compta/server/sdata/MC2I/gentiers/TClient(tiers.numeroTVACEE eq 'FR00111222333')
 GET {endpoint}/compta/server/sdata/MC2I/gentiers/TFournisseur(tiers.numeroTVACEE eq 'FR00111222333')
 
@@ -792,13 +827,13 @@ GET {endpoint}/compta/server/sdata/MC2I/gentiers/TFournisseur(tiers.numeroTVACEE
 GET {endpoint}/compta/server/sdata/MC2I/gentiers/TClient(tiers.raisonSociale eq 'TOTAL')
 GET {endpoint}/compta/server/sdata/MC2I/gentiers/TFournisseur(tiers.raisonSociale eq 'TOTAL')
 
-# Critère 4 — personne physique (nom + prénom) — syntaxe "and" non confirmée, cf. TODO ci-dessus
+# Critère 5 — personne physique (nom + prénom) — syntaxe "and" non confirmée, cf. TODO ci-dessus
 GET {endpoint}/compta/server/sdata/MC2I/gentiers/TClient(tiers.nom eq 'Dupont' and tiers.prenom eq 'Jean')
 GET {endpoint}/compta/server/sdata/MC2I/gentiers/TFournisseur(tiers.nom eq 'Dupont' and tiers.prenom eq 'Jean')
 ```
 
-Pas d'URL pour le critère 3 (matricule) : champs Odoo et Sage non identifiés, cf. TODO dans le
-tableau ci-dessus — rien à appeler tant que ce n'est pas levé.
+Pas d'URL pour le critère "matricule" (personne physique, critère 4) : champs Odoo et Sage non
+identifiés, cf. TODO dans la grille ci-dessus — rien à appeler tant que ce n'est pas levé.
 
 ### 8.1bis Pagination des résultats de recherche
 
@@ -814,17 +849,24 @@ dans une seule page (confirmé présent sur d'autres vues de ce dossier, cf. ré
   d'un critère de recherche trop large ou d'un problème côté Sage, pas une situation à gérer en
   silence jusqu'au bout ;
 - **tous** les résultats accumulés (pas seulement ceux de la première page) comptent pour décider
-  s'il y a ambiguïté (ex. critère 4, recherche par nom : plusieurs résultats sur l'ensemble des pages
-  → validation utilisateur requise, pas seulement si plusieurs résultats tiennent sur la première
-  page) ;
-- en pratique, les critères 1 et 2 (SIRET, TVA intracom) ne devraient renvoyer qu'un résultat au
-  plus par rôle — la pagination y sert surtout de garde-fou si jamais des doublons existent côté
-  Sage. Le critère 4 (nom) est celui le plus susceptible de déclencher une pagination réelle.
+  s'il y a ambiguïté (ex. critère nom : plusieurs résultats sur l'ensemble des pages → validation
+  utilisateur requise, pas seulement si plusieurs résultats tiennent sur la première page) ;
+- en pratique, les critères SIRET/SIREN/TVA (communs aux deux grilles) ne devraient renvoyer qu'un
+  résultat au plus par rôle — la pagination y sert surtout de garde-fou si jamais des doublons
+  existent côté Sage. Le critère nom (dernier recours, personne morale ou physique) est celui le
+  plus susceptible de déclencher une pagination réelle.
 
 ### 8.2 Tiers introuvable sur Sage
 
 - Demander confirmation à l'utilisateur (wizard) avant toute création — jamais de création
   automatique silencieuse.
+- **Pré-requis bloquant avant la création** : SIRET, SIREN et TVA intracommunautaire doivent être
+  renseignés sur la fiche du tiers côté Odoo (ces trois champs sont envoyés à la création si
+  remplis, cf. §7bis.1 — les envoyer vides créerait une fiche Sage incomplète). Si l'un des trois
+  manque, le wizard affiche un bandeau d'avertissement listant les champs manquants et désactive le
+  bouton Valider (remplacé par un bouton inerte de même libellé) — vérification refaite côté serveur
+  dans `action_validate` (ne jamais se fier uniquement à l'état désactivé côté client). Ce pré-requis
+  ne s'applique qu'au mode "créer un nouveau tiers" — pas au mode "choisir un candidat existant".
 - Si confirmé : attribuer un code et créer via le `$batch` POST `TTiers` + EXEC `creerClient` (ou
   `creerFournisseur` selon le rôle manquant — le rôle à créer est déterminé par le contexte qui a
   déclenché la recherche, ex. `move_type` de la facture en cours de validation : client pour
@@ -851,6 +893,26 @@ dans une seule page (confirmé présent sur d'autres vues de ce dossier, cf. ré
     §8.1-8.2 quand un tiers déjà connu côté Sage (un seul rôle) a besoin du second rôle plus tard :
     créer un second `TTiers`, ou ajouter le rôle manquant sur le `TTiers` existant ?
 
+**Échec de création : code déjà pris, tiers existant mais non partagé avec la société appelante
+(constaté en bac à sable le 2026-11-08).** La création peut échouer alors même que la cascade §8.1
+(SIRET/SIREN/TVA/nom) n'a rien trouvé pour ce rôle, avec un diagnostic du type *"Impossible de créer
+le tiers "401CHRISTIANDIORCOUTURE". Un tiers possédant le même code existe déjà."* (niché sous la
+clé `$batch` du rollback, pas sous `$`, cf. correctif dans `sage_client.py::_describe_error_body`).
+**Interprétation retenue** : ce tiers existe bel et bien dans la base Sage, mais n'est pas
+partagé/accessible pour la société qui appelle (ici `TSMN`) — c'est pour ça que la cascade de
+recherche, limitée aux tiers visibles par cette société, ne l'avait pas trouvé. Ce n'est pas un
+problème que le connecteur peut résoudre lui-même (le partage se gère côté Sage, par un humain) :
+`_sage_create_role` intercepte spécifiquement ce diagnostic ("existe déjà") et affiche dans le
+wizard un message explicite invitant l'utilisateur à contacter le service comptabilité pour faire
+partager ce tiers avec sa société, plutôt que l'erreur technique brute de Sage.
+
+**Filet générique pour tout autre échec de création.** Si le diagnostic Sage ne correspond à aucun
+cas connu (ou si son texte exact évolue un jour, rendant la détection "existe déjà" caduque),
+l'utilisateur voit quand même un message propre et générique ("la création a échoué, voir les logs
+serveur ou contacter la comptabilité") — jamais la trace technique brute (`SageConnectorError`)
+remontée telle quelle jusqu'à l'écran. Le détail technique reste loggé côté serveur pour le
+débogage.
+
 **Trames d'appel** (tiers `TOTAL`, adresse fictive pour l'exemple ; structure reprise à l'identique
 de l'exemple officiel wiki1000 "Creation d'un fournisseur (API)", cf. §2) :
 
@@ -869,6 +931,9 @@ POST {endpoint}/compta/server/sdata/MC2I/$batch
       "$shareLevel": 2,
       "code": "411TOTAL",
       "caption": "TOTAL",
+      "codeSIRET": "11122233344455",
+      "noSiren": "111222333",
+      "numeroTVACEE": "FR00111222333",
       "sitesList": [{
         "code": "PRINCIPAL",
         "caption": "TOTAL",
@@ -887,6 +952,8 @@ POST {endpoint}/compta/server/sdata/MC2I/$batch
   ]
 }
 ```
+*(`codeSIRET`/`noSiren`/`numeroTVACEE` omis du payload si le champ Odoo correspondant est vide —
+jamais envoyés à vide, cf. §7bis.1.)*
 
 Réponse (forme confirmée par l'exemple officiel — pas de `$key`, OID à extraire de `$location`) :
 ```json

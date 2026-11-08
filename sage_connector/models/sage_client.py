@@ -96,6 +96,15 @@ class SDataClient:
         top_level = data.get('$') if isinstance(data, dict) else None
         if isinstance(top_level, dict) and top_level.get('$diagnoses'):
             diagnoses.extend(top_level['$diagnoses'])
+        # Un rollback de `$batch` (toutes les opérations réussies individuellement, mais annulées
+        # globalement) porte son diagnostic sous une clé `$batch` dédiée, pas sous `$` -- constaté
+        # en prod sur un rejet "Un tiers possédant le même code existe déjà" (§8.2), jamais détecté
+        # avant ce correctif, seul le texte brut (par chance sous 2000 caractères) le montrait.
+        batch_level = data.get('$batch') if isinstance(data, dict) else None
+        if isinstance(batch_level, dict):
+            nested = batch_level.get('$') if isinstance(batch_level.get('$'), dict) else {}
+            if nested.get('$diagnoses'):
+                diagnoses.extend(nested['$diagnoses'])
         for resource in (data.get('$resources') or []) if isinstance(data, dict) else []:
             if not isinstance(resource, dict):
                 continue
@@ -136,6 +145,11 @@ class SDataClient:
                     "Sage API unreachable (%s %s): %s" % (method, url, exc)
                 ) from exc
 
+            _logger.info(
+                "Sage API response: %s %s -> %s\n%s",
+                method, url, response.status_code, response.text[:2000],
+            )
+
             if response.status_code in (429, 500, 502, 503, 504) and attempt <= MAX_RETRIES:
                 _logger.info(
                     "Sage API %s on %s %s, retry %s/%s in %ss",
@@ -170,6 +184,10 @@ class SDataClient:
         while next_url and pages < max_pages:
             _logger.info(self._as_curl_command('GET', next_url, None))
             response = self.session.request('GET', next_url, timeout=DEFAULT_TIMEOUT)
+            _logger.info(
+                "Sage API response: GET %s -> %s\n%s",
+                next_url, response.status_code, response.text[:2000],
+            )
             if not response.ok:
                 break
             data = response.json() if response.content else {}

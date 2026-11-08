@@ -8,9 +8,11 @@
         <field name="arch" type="xml">
             <field name="vat" position="after">
                 <field name="sage_client_code"/>
+                <button name="action_sage_resolve_client" type="object"
+                        string="Rechercher / créer le code client" class="btn-link"/>
                 <field name="sage_vendor_code"/>
-                <button name="action_sage_resolve" type="object"
-                        string="Rechercher / créer sur Sage" class="btn-link"/>
+                <button name="action_sage_resolve_vendor" type="object"
+                        string="Rechercher / créer le code fournisseur" class="btn-link"/>
             </field>
         </field>
     </record>
@@ -22,9 +24,11 @@
         <field name="arch" type="xml">
             <field name="external_auxiliary_code" position="after">
                 <field name="sage_client_code"/>
+                <button name="action_sage_resolve_client" type="object"
+                        string="Rechercher / créer le code client" class="btn-link"/>
                 <field name="sage_vendor_code"/>
-                <button name="action_sage_resolve" type="object"
-                        string="Rechercher / créer sur Sage" class="btn-link"/>
+                <button name="action_sage_resolve_vendor" type="object"
+                        string="Rechercher / créer le code fournisseur" class="btn-link"/>
             </field>
         </field>
     </record>
@@ -41,9 +45,11 @@
                 <group>
                     <group string="Identifiants">
                         <field name="sage_client_code"/>
+                        <button name="action_sage_resolve_client" type="object"
+                                string="Rechercher / créer le code client" class="btn-link"/>
                         <field name="sage_vendor_code"/>
-                        <button name="action_sage_resolve" type="object"
-                                string="Rechercher / créer sur Sage" class="btn-link"/>
+                        <button name="action_sage_resolve_vendor" type="object"
+                                string="Rechercher / créer le code fournisseur" class="btn-link"/>
                     </group>
                 </group>
             </xpath>

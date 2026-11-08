@@ -5,12 +5,14 @@ import unicodedata
 
 from odoo import _, api, fields, models
 from odoo.addons.project_accounting.models.res_partner import PROTECTED_FIELD_LIST
+from odoo.exceptions import UserError
 
 from .sage_client import (
     SAGE_ENTITY_PARTNER,
     SAGE_ENTITY_PARTNER_CLIENT,
     SAGE_ENTITY_PARTNER_VENDOR,
     SDataClient,
+    SageConnectorError,
 )
 
 _logger = logging.getLogger(__name__)
@@ -19,9 +21,11 @@ _logger = logging.getLogger(__name__)
 # ADV -- mêmes règles que les autres données comptables du tiers (cf. project_accounting).
 PROTECTED_FIELD_LIST.extend(['sage_client_code', 'sage_vendor_code'])
 
-# Jointure SData à utiliser pour chaque critère exact de la cascade de recherche (§8.1).
+# Jointure SData à utiliser pour chaque critère exact de la cascade de recherche (§8.1), dans
+# l'ordre où ils sont essayés : SIRET, puis SIREN (noSiren), puis TVA intracommunautaire.
 _SAGE_JOIN_FIELD_BY_CRITERION = {
     'siret': 'tiers.codeSIRET',
+    'siren': 'tiers.noSiren',
     'vat': 'tiers.numeroTVACEE',
 }
 
@@ -29,8 +33,8 @@ _SAGE_JOIN_FIELD_BY_CRITERION = {
 class ResPartner(models.Model):
     _inherit = 'res.partner'
 
-    sage_client_code = fields.Char(string="Code tiers Sage client", readonly=True, copy=False)
-    sage_vendor_code = fields.Char(string="Code tiers Sage fournisseur", readonly=True, copy=False)
+    sage_client_code = fields.Char(string="Code tiers Sage client", readonly=False, copy=False)
+    sage_vendor_code = fields.Char(string="Code tiers Sage fournisseur", readonly=False, copy=False)
 
     # ------------------------------------------------------------------
     # Payload (mapping tiers comptables, SPEC.md §7bis)
@@ -41,7 +45,7 @@ class ResPartner(models.Model):
         caption = self.name
         if not self.is_company and self.first_name:
             caption = "%s %s" % (self.first_name, self.name)
-        return {
+        payload = {
             'caption': caption,
             'sitesList': [{
                 'code': 'PRINCIPAL',
@@ -54,6 +58,16 @@ class ResPartner(models.Model):
                 },
             }],
         }
+        # Envoyés seulement s'ils sont renseignés côté Odoo (§7bis.1) -- aident la cascade de
+        # recherche (§8.1) à retrouver ce tiers la prochaine fois, et évitent de créer un tiers
+        # incomplet alors que ces données sont déjà connues.
+        if self.siret:
+            payload['codeSIRET'] = self.siret
+        if self.siren:
+            payload['noSiren'] = self.siren
+        if self.vat:
+            payload['numeroTVACEE'] = self.vat
+        return payload
 
     def _sage_normalize_root(self):
         self.ensure_one()
@@ -90,8 +104,8 @@ class ResPartner(models.Model):
 
     def _sage_search_cascade_auto(self):
         """Recherche automatique et silencieuse, déclenchée à la validation d'une pièce (§8.0
-        point 1). Ne tente QUE les critères exacts (SIRET, TVA) -- jamais la recherche par nom,
-        qui nécessite une confirmation humaine (cf. `_sage_search_cascade_manual`).
+        point 1). Ne tente QUE les critères exacts (SIRET, SIREN, TVA) -- jamais la recherche par
+        nom, qui nécessite une confirmation humaine (cf. `_sage_resolve_role`, boutons manuels).
         """
         self.ensure_one()
         if self.sage_client_code and self.sage_vendor_code:
@@ -102,7 +116,7 @@ class ResPartner(models.Model):
             _logger.warning("Sage connector: unable to build API client for partner search")
             _logger.warning(traceback.format_exc())
             return
-        for criterion, value in (('siret', self.siret), ('vat', self.vat)):
+        for criterion, value in (('siret', self.siret), ('siren', self.siren), ('vat', self.vat)):
             if not value:
                 continue
             try:
@@ -114,9 +128,10 @@ class ResPartner(models.Model):
                 return
 
     def _sage_search_by_name(self, client, role_entity):
-        """Recherche par nom, critère de dernier recours (§8.1) -- limite connue et acceptée :
-        sensible à la casse de la *valeur* comparée (Odoo stocke en majuscules, Sage en casse
-        mixte), ni `eq` ni `like` ne contournent ça côté Sage (cf. SPEC.md §8.1 détail critère 4).
+        """Recherche par nom, critère de dernier recours (§8.1, grilles personne morale/physique) --
+        limite connue et acceptée : sensible à la casse de la *valeur* comparée (Odoo stocke en
+        majuscules, Sage en casse mixte), ni `eq` ni `like` ne contournent ça côté Sage (cf.
+        SPEC.md §8.1).
         """
         self.ensure_one()
         if self.is_company:
@@ -125,32 +140,53 @@ class ResPartner(models.Model):
             where = "tiers.nom eq '%s' and tiers.prenom eq '%s'" % (self.name or '', self.first_name or '')
         return client.get_all_pages(role_entity, params={'where': where})
 
-    def _sage_resolve_exact_for_role(self, client, field_name, entity):
-        """Critères exacts (SIRET, TVA) pour un rôle donné, utilisé par le bouton manuel (§8.0
-        point 2) -- contrairement à `_sage_try_exact_criterion` (cascade automatique, silencieuse),
-        celui-ci rend compte du résultat même quand le code est déjà renseigné : un tiers trouvé sur
-        Sage mais différent du code existant doit être signalé, pas silencieusement ignoré.
+    def _sage_resolve_role(self, client, field_name, entity):
+        """Cascade pour un seul rôle (§8.1) : SIRET, puis SIREN, puis TVA, puis (si le rôle est
+        encore vide) raison sociale/nom -- s'arrête au **premier** critère qui renvoie quelque
+        chose, jamais ne descend plus bas. TODO critère "matricule" (personnes physiques) non
+        implémenté : champs Odoo et Sage non identifiés (cf. SPEC.md §3/§8.1).
 
-        TODO critère "matricule" (personnes physiques) non implémenté : champs Odoo et Sage non
-        identifiés (cf. SPEC.md §3/§8.1).
-
-        Renvoie (status, code_trouvé) avec status parmi 'filled' (était vide, rempli), 'differs'
-        (déjà rempli, Sage renvoie autre chose), 'same' (déjà rempli, Sage confirme), 'not_found'.
+        Renvoie un dict :
+        - {'status': 'already_resolved'} : champ déjà rempli, Sage confirme le même code (ou
+          aucun des critères exacts n'a rien trouvé de différent) ;
+        - {'status': 'filled', 'code': ...} : champ vide, un seul résultat trouvé, code écrit ;
+        - {'status': 'differs', 'code': ...} : champ déjà rempli, Sage renvoie un code différent
+          (jamais écrasé automatiquement) ;
+        - {'status': 'ambiguous', 'candidates': [...]} : plusieurs résultats au même critère,
+          confirmation humaine requise (§8.1) ;
+        - {'status': 'not_found'} : rien trouvé sur aucun critère, proposer la création (§8.2).
         """
         self.ensure_one()
-        for criterion, value in (('siret', self.siret), ('vat', self.vat)):
+        already_resolved = bool(self[field_name])
+        for criterion, value in (('siret', self.siret), ('siren', self.siren), ('vat', self.vat)):
             if not value:
                 continue
             join_field = _SAGE_JOIN_FIELD_BY_CRITERION[criterion]
             resources = client.get_all_pages(entity, params={'where': "%s eq '%s'" % (join_field, value)})
-            if resources:
+            if not resources:
+                continue
+            if already_resolved:
                 found_code = resources[0].get('Caption')
-                current = self[field_name]
-                if not current:
-                    self.write({field_name: found_code})
-                    return 'filled', found_code
-                return ('same', found_code) if current == found_code else ('differs', found_code)
-        return 'not_found', None
+                if found_code == self[field_name]:
+                    return {'status': 'already_resolved'}
+                return {'status': 'differs', 'code': found_code}
+            if len(resources) == 1:
+                code = resources[0].get('Caption')
+                self.write({field_name: code})
+                return {'status': 'filled', 'code': code}
+            return {'status': 'ambiguous', 'candidates': resources}
+
+        if already_resolved:
+            return {'status': 'already_resolved'}
+
+        found = self._sage_search_by_name(client, entity)
+        if not found:
+            return {'status': 'not_found'}
+        if len(found) == 1:
+            code = found[0].get('Caption')
+            self.write({field_name: code})
+            return {'status': 'filled', 'code': code}
+        return {'status': 'ambiguous', 'candidates': found}
 
     # ------------------------------------------------------------------
     # Création d'un rôle (§8.2)
@@ -170,7 +206,32 @@ class ResPartner(models.Model):
             {'$httpMethod': 'POST', '$url': SAGE_ENTITY_PARTNER, '$uuid': 'newTiers', '$shareLevel': 2, **payload},
             {'$httpMethod': 'EXEC', '$url': '%s(newTiers)/%s' % (SAGE_ENTITY_PARTNER, exec_method)},
         ]
-        client.batch(operations)
+        try:
+            client.batch(operations)
+        except SageConnectorError as exc:
+            if "existe déjà" in str(exc):
+                # Un tiers portant ce code existe réellement dans la base Sage, mais la recherche
+                # (§8.1) ne l'avait trouvé par aucun critère : il existe très probablement, mais
+                # n'est pas partagé/accessible pour la société qui appelle (ici TSMN) -- constaté en
+                # bac à sable le 2026-11-08. Ce n'est pas un problème que le connecteur peut résoudre
+                # lui-même (partage à gérer côté Sage), un humain doit intervenir.
+                raise UserError(_(
+                    "Impossible de créer le tiers %(code)s : un tiers portant ce code existe déjà "
+                    "dans Sage, mais n'est pas partagé avec votre société. Contactez le service "
+                    "comptabilité pour qu'il partage ce tiers avec votre société sur Sage, puis "
+                    "réessayez.",
+                    code=code,
+                )) from exc
+            # Message générique si le diagnostic ne correspond à aucun cas connu (ou si le texte
+            # exact de Sage évolue un jour) -- un humain devant le wizard doit toujours voir un
+            # message propre, jamais la trace technique brute. Le détail reste dans les logs
+            # serveur pour le débogage (cf. `_logger.warning` ci-dessous).
+            _logger.warning("Sage connector: échec de création du tiers %s (%s)", code, exc)
+            raise UserError(_(
+                "La création du tiers %(code)s sur Sage a échoué. Voir les logs serveur pour le "
+                "détail, ou contactez le service comptabilité si le problème persiste.",
+                code=code,
+            )) from exc
         role_entity = SAGE_ENTITY_PARTNER_CLIENT if role == 'client' else SAGE_ENTITY_PARTNER_VENDOR
         actual_caption = self._sage_reread_role_caption(client, role_entity, code)
         field_name = 'sage_client_code' if role == 'client' else 'sage_vendor_code'
@@ -194,73 +255,65 @@ class ResPartner(models.Model):
             'params': {'title': _("Sage"), 'message': message, 'type': notification_type},
         }
 
-    def action_sage_resolve(self):
-        """Bouton manuel (§8.0 point 2). Pour chaque rôle (client/fournisseur) déjà résolu, on
-        vérifie quand même les critères exacts (SIRET/TVA) pour détecter un écart sans jamais
-        écraser le code existant (alerte si Sage renvoie autre chose). Pour chaque rôle encore
-        manquant : recherche par nom, candidats affichés dans le wizard pour confirmation humaine
-        (§8.1 critère 4) -- jamais de rattachement automatique sur un simple match de nom.
+    _SAGE_ROLE_LABEL = {'client': "client", 'vendor': "fournisseur"}
+    _SAGE_ROLE_INFO = {
+        'client': ('sage_client_code', SAGE_ENTITY_PARTNER_CLIENT),
+        'vendor': ('sage_vendor_code', SAGE_ENTITY_PARTNER_VENDOR),
+    }
+
+    def action_sage_resolve_client(self):
+        return self._sage_resolve_button('client')
+
+    def action_sage_resolve_vendor(self):
+        return self._sage_resolve_button('vendor')
+
+    def _sage_resolve_button(self, role):
+        """Bouton manuel, un par rôle (§8.0 point 2) : lance `_sage_resolve_role` et traduit son
+        résultat en toast, ou ouvre le wizard minimaliste (choix parmi plusieurs candidats, ou
+        création si rien trouvé).
         """
         self.ensure_one()
-        if self.sage_client_code and self.sage_vendor_code:
-            return self._sage_notification(
-                _("Ce tiers est déjà résolu sur Sage (client et fournisseur)."), 'success',
-            )
-
+        field_name, entity = self._SAGE_ROLE_INFO[role]
+        role_label = self._SAGE_ROLE_LABEL[role]
         client = SDataClient(self.env)
-        role_info = {
-            'client': ('sage_client_code', SAGE_ENTITY_PARTNER_CLIENT),
-            'vendor': ('sage_vendor_code', SAGE_ENTITY_PARTNER_VENDOR),
-        }
-        exact_results = {
-            role: self._sage_resolve_exact_for_role(client, field_name, entity)
-            for role, (field_name, entity) in role_info.items()
-        }
+        result = self._sage_resolve_role(client, field_name, entity)
+        status = result['status']
 
-        if self.sage_client_code and self.sage_vendor_code:
-            differs = [role for role, (status, _code) in exact_results.items() if status == 'differs']
-            if differs:
-                return self._sage_notification(_(
-                    "Tiers résolu, mais Sage renvoie un code %(role)s différent par SIRET/TVA -- "
-                    "vérifiez manuellement sur Sage avant de changer quoi que ce soit.",
-                    role=" et ".join(differs),
-                ), 'warning')
-            return self._sage_notification(_("Tiers résolu sur Sage (client et fournisseur)."), 'success')
+        if status == 'already_resolved':
+            return self._sage_notification(
+                _("Ce tiers a déjà un code %(role)s sur Sage.", role=role_label), 'success',
+            )
+        if status == 'filled':
+            return self._sage_notification(_(
+                "Code %(role)s trouvé et enregistré sur Sage : %(code)s",
+                role=role_label, code=result['code'],
+            ), 'success')
+        if status == 'differs':
+            return self._sage_notification(_(
+                "Sage renvoie un code %(role)s différent (%(code)s) -- vérifiez manuellement avant "
+                "de changer quoi que ce soit.",
+                role=role_label, code=result['code'],
+            ), 'warning')
 
-        line_vals = []
-        for role, (field_name, entity) in role_info.items():
-            status, found_code = exact_results[role]
-            if self[field_name]:
-                line_vals.append((0, 0, {
-                    'partner_id': self.id, 'role': role, 'resolved': True,
-                    'code': self[field_name], 'name': _("Déjà résolu"),
-                }))
-                if status == 'differs':
-                    line_vals.append((0, 0, {
-                        'partner_id': self.id, 'role': role, 'resolved': True,
-                        'code': found_code,
-                        'name': _("⚠ Sage renvoie un code différent par SIRET/TVA -- à vérifier manuellement"),
-                    }))
-                continue
-            found = self._sage_search_by_name(client, entity)
-            if found:
-                line_vals.extend((0, 0, {
-                    'partner_id': self.id, 'role': role,
-                    'code': candidate.get('Caption'),
-                    'name': candidate.get('raisonSociale') or candidate.get('Caption'),
-                }) for candidate in found)
-            else:
-                line_vals.append((0, 0, {
-                    'partner_id': self.id, 'role': role, 'is_create_option': True,
-                    'new_code': self._sage_default_code(role),
-                }))
-
-        batch = self.env['sage.partner.resolve.batch.wizard'].create({'line_ids': line_vals})
+        if status == 'ambiguous':
+            candidate_vals = [(0, 0, {
+                'code': candidate.get('Caption'),
+                'name': candidate.get('raisonSociale') or candidate.get('Caption'),
+            }) for candidate in result['candidates']]
+            wizard = self.env['sage.partner.resolve.wizard'].create({
+                'partner_id': self.id, 'role': role, 'mode': 'choose',
+                'candidate_ids': candidate_vals,
+            })
+        else:  # not_found
+            wizard = self.env['sage.partner.resolve.wizard'].create({
+                'partner_id': self.id, 'role': role, 'mode': 'create',
+                'new_code': self._sage_default_code(role),
+            })
         return {
             'type': 'ir.actions.act_window',
-            'name': _("Résolution du tiers sur Sage"),
-            'res_model': 'sage.partner.resolve.batch.wizard',
+            'name': _("Résolution du tiers %(role)s sur Sage", role=role_label),
+            'res_model': 'sage.partner.resolve.wizard',
             'view_mode': 'form',
-            'res_id': batch.id,
+            'res_id': wizard.id,
             'target': 'new',
         }

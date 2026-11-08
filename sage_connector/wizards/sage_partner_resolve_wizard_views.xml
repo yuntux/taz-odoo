@@ -1,27 +1,43 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <odoo>
 
-    <record id="view_sage_partner_resolve_batch_wizard_form" model="ir.ui.view">
-        <field name="name">sage.partner.resolve.batch.wizard.form</field>
-        <field name="model">sage.partner.resolve.batch.wizard</field>
+    <record id="view_sage_partner_resolve_wizard_form" model="ir.ui.view">
+        <field name="name">sage.partner.resolve.wizard.form</field>
+        <field name="model">sage.partner.resolve.wizard</field>
         <field name="arch" type="xml">
             <form>
                 <sheet>
-                    <field name="line_ids">
-                        <list editable="bottom" decoration-muted="resolved">
-                            <field name="partner_id" readonly="1"/>
-                            <field name="role" readonly="1"/>
-                            <field name="resolved" column_invisible="1"/>
-                            <field name="is_create_option" column_invisible="1"/>
-                            <field name="code" readonly="1" string="Code Sage"/>
-                            <field name="name" readonly="1" string="Libellé"/>
-                            <field name="new_code" readonly="not is_create_option" string="Code à créer"/>
-                            <field name="selected" readonly="resolved" string="Choisir"/>
-                        </list>
-                    </field>
+                    <group>
+                        <field name="partner_id" readonly="1"/>
+                        <field name="role" readonly="1"/>
+                    </group>
+                    <group invisible="mode != 'choose'">
+                        <p>L'API Sage a renvoyé plusieurs tiers possibles -- choisissez-en un.</p>
+                        <field name="candidate_ids" readonly="1" nolabel="1">
+                            <list>
+                                <field name="code"/>
+                                <field name="name"/>
+                            </list>
+                        </field>
+                        <field name="selected_candidate_id"/>
+                    </group>
+                    <group invisible="mode != 'create'">
+                        <p>L'API Sage n'a rien renvoyé pour ce tiers -- créer un nouveau tiers avec ce code ?</p>
+                        <field name="new_code"/>
+                        <field name="missing_required_label" invisible="1"/>
+                        <field name="can_validate" invisible="1"/>
+                        <div class="alert alert-warning" role="alert" invisible="not missing_required_label">
+                            Champ(s) manquant(s) sur la fiche du tiers avant de pouvoir le créer sur Sage :
+                            <field name="missing_required_label" readonly="1" nolabel="1"/>.
+                            Complétez sa fiche avant de valider.
+                        </div>
+                    </group>
                 </sheet>
                 <footer>
-                    <button name="action_validate" type="object" string="Valider" class="btn-primary"/>
+                    <button name="action_validate" type="object" string="Valider" class="btn-primary"
+                            invisible="mode == 'create' and not can_validate"/>
+                    <button string="Valider" class="btn-secondary text-muted"
+                            invisible="not(mode == 'create' and not can_validate)"/>
                     <button string="Annuler" special="cancel" class="btn-secondary"/>
                 </footer>
             </form>
