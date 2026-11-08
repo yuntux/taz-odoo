@@ -19,23 +19,23 @@ _logger = logging.getLogger(__name__)
 SAGE_JOURNAL_ENTRY_TYPE = "Brouillard"
 
 # "VA" (avoir client) reste une hypothèse non confirmée (par symétrie avec FC). Côté fournisseur,
-# "FF" = Factures fournisseurs, "AF" = Avoir fournisseurs (liste IHM Sage, SPEC.md §7.2) -- plusieurs
+# "FF" = Factures fournisseurs, "AF" = Avoir fournisseurs (liste IHM Sage, SPEC.md §6.3.2) -- plusieurs
 # autres types fournisseur existent (FFM, FFS, FFTVA...) mais leur critère de choix n'est pas encore
-# identifié, cf. TODO dans SPEC.md §7.2.
+# identifié, cf. TODO dans SPEC.md §6.3.2.
 SAGE_DOCUMENT_TYPE_BY_MOVE_TYPE = {
     'out_invoice': 'FC',
     'out_refund': 'VA',
     'in_invoice': 'FF',
     'in_refund': 'AF',
     # Écriture diverse ("entry") -- la portée (`_sage_is_in_scope`) couvre bien ce type, mais ce
-    # mapping ne l'avait pas, ce qui envoyait un `typePiece: null` à Sage (SPEC.md §7.2 : "OD").
+    # mapping ne l'avait pas, ce qui envoyait un `typePiece: null` à Sage (SPEC.md §6.3.2 : "OD").
     'entry': 'OD',
 }
 
 # Pièces intragroupe (le tiers est lui-même une société du groupe, identifié par
 # `res.company.partner_id`) : type de pièce distinct. TODO : équivalent non confirmé pour un avoir
 # client intragroupe, ni pour un avoir fournisseur intragroupe (FFI, ou AF comme pour un avoir
-# fournisseur normal ? -- à trancher avec Mercuria/MC2I, cf. SPEC.md §7.2).
+# fournisseur normal ? -- à trancher avec Mercuria/MC2I, cf. SPEC.md §6.3.2).
 SAGE_INTRAGROUP_DOCUMENT_TYPE_BY_MOVE_TYPE = {
     'out_invoice': 'FCI',
     'in_invoice': 'FFI',
@@ -66,11 +66,11 @@ class AccountMove(models.Model):
     ], copy=False, readonly=True)
 
     # ------------------------------------------------------------------
-    # Portée (SPEC.md §6.1 point 0)
+    # Portée (SPEC.md §6.2.1 point 0)
     # ------------------------------------------------------------------
 
     def _sage_is_in_scope(self):
-        """La portée ne dépend que du journal et de la date (§6.1 point 0) -- elle couvre tout
+        """La portée ne dépend que du journal et de la date (§6.2.1 point 0) -- elle couvre tout
         type de pièce (y compris une écriture diverse `entry`), pas seulement les factures/avoirs.
         Le `move_type` n'intervient que pour savoir QUEL code tiers est requis (cf.
         `_sage_ensure_partner_code`), pas pour décider si la pièce est concernée ou non.
@@ -87,12 +87,12 @@ class AccountMove(models.Model):
         return True
 
     # ------------------------------------------------------------------
-    # Validation (§6.1)
+    # Validation (§6.2.1)
     # ------------------------------------------------------------------
 
     def _sage_ensure_partner_code(self):
-        """Contrôle bloquant (§6.1 point 1) : tente d'abord la recherche automatique silencieuse
-        (§8.1 critères exacts uniquement) avant de bloquer la validation.
+        """Contrôle bloquant (§6.2.1 point 1) : tente d'abord la recherche automatique silencieuse
+        (§7.4.2 critères exacts uniquement) avant de bloquer la validation.
         """
         self.ensure_one()
         field_name = SAGE_PARTNER_CODE_FIELD_BY_MOVE_TYPE.get(self.move_type)
@@ -138,7 +138,7 @@ class AccountMove(models.Model):
         return res
 
     # ------------------------------------------------------------------
-    # Suppression (§6.2)
+    # Suppression (§6.2.2)
     # ------------------------------------------------------------------
 
     def _sage_is_locked(self):
@@ -161,7 +161,7 @@ class AccountMove(models.Model):
         return super().unlink()
 
     # ------------------------------------------------------------------
-    # Mapping écriture (§7)
+    # Mapping écriture (§6.3)
     # ------------------------------------------------------------------
 
     @api.model
@@ -174,7 +174,7 @@ class AccountMove(models.Model):
 
     def _sage_is_intragroup_partner(self, intragroup_partner_ids=None):
         """Le tiers facturé est-il lui-même une société du groupe (identifiée par
-        `res.company.partner_id`) ? Détermine le type de pièce FC/FCI (§7).
+        `res.company.partner_id`) ? Détermine le type de pièce FC/FCI (§6.3).
         """
         self.ensure_one()
         if intragroup_partner_ids is None:
@@ -198,7 +198,7 @@ class AccountMove(models.Model):
     @staticmethod
     def _sage_datetime(value):
         """Sage attend un datetime ISO-8601 complet (`...T00:00:00.000Z`), pas une simple date --
-        format confirmé empiriquement (SPEC.md §7.4) sur un exemple fonctionnel.
+        format confirmé empiriquement (SPEC.md §6.3.4) sur un exemple fonctionnel.
         """
         if not value:
             return ''
@@ -206,7 +206,7 @@ class AccountMove(models.Model):
 
     def _sage_build_journal_entry_lines(self, session_uuid, start_index, intragroup_partner_ids=None):
         """Construit les opérations `$batch` (une par account.move.line au solde non nul) pour
-        cette pièce, prêtes à être insérées dans le lot partagé (§6.1 point 3).
+        cette pièce, prêtes à être insérées dans le lot partagé (§6.2.1 point 3).
         """
         self.ensure_one()
         company = self.company_id
@@ -252,7 +252,7 @@ class AccountMove(models.Model):
         return operations
 
     # ------------------------------------------------------------------
-    # Envoi groupé (§6.1 point 3)
+    # Envoi groupé (§6.2.1 point 3)
     # ------------------------------------------------------------------
 
     @api.model
@@ -261,7 +261,7 @@ class AccountMove(models.Model):
         # construit pour tout le lot, il ne doit pas mélanger les pièces d'autres sociétés qui
         # auraient chacune leur propre contrat/endpoint Sage.
         # `to_update` est volontairement exclu : aucune méthode API de mise à jour d'une écriture
-        # déjà importée n'existe (SPEC.md §6.1 point 4 / §3), et la structure même de la base Sage
+        # déjà importée n'existe (SPEC.md §6.2.1 point 4 / §4), et la structure même de la base Sage
         # (TPIECE/TECRITURE ne référencent que le lot/la session d'import, jamais la ligne de
         # staging d'origine) exclut qu'un `PUT` sur cette ligne de staging ait le moindre effet
         # après coup. La correction d'une pièce déjà envoyée passe par une contre-passation
@@ -290,7 +290,7 @@ class AccountMove(models.Model):
             '$uuid': session_uuid,
             'Caption': session_caption,
         }
-        # Volontairement non renseigné par défaut (cf. SPEC.md §4.2/§7.1) : les lignes envoyées
+        # Volontairement non renseigné par défaut (cf. SPEC.md §5.2/§6.3.1) : les lignes envoyées
         # sont toujours équilibrées par construction, un compte d'équilibre masquerait un bug de
         # mapping au lieu de le faire échouer.
         compte_equilibre = self.env.company.sage_compte_equilibre
@@ -351,7 +351,7 @@ class AccountMove(models.Model):
             self.env.cr.commit()
 
     def _sage_apply_batch_result(self, result):
-        """Lecture pièce par pièce du résultat (§6.1 point 3, §7.4) : un `$httpStatus` 200 sur
+        """Lecture pièce par pièce du résultat (§6.2.1 point 3, §6.3.4) : un `$httpStatus` 200 sur
         l'exécution ne garantit pas que chaque pièce a été acceptée -- il faut chercher, pour
         chaque pièce, un message de succès explicite avant de la marquer `sent`.
         """

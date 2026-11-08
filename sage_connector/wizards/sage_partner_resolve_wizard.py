@@ -1,8 +1,8 @@
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
-# Champs Odoo requis avant de pouvoir créer un tiers sur Sage (§8.2) -- en plus d'y aider la
-# cascade de recherche future (§8.1), les envoyer vide créerait une fiche Sage incomplète.
+# Champs Odoo requis avant de pouvoir créer un tiers sur Sage (§7.4.4) -- en plus d'y aider la
+# cascade de recherche future (§7.4.2), les envoyer vide créerait une fiche Sage incomplète.
 _SAGE_CREATE_REQUIRED_FIELDS = [
     ('siret', "SIRET"),
     ('siren', "SIREN"),
@@ -11,7 +11,7 @@ _SAGE_CREATE_REQUIRED_FIELDS = [
 
 
 class SagePartnerResolveWizard(models.TransientModel):
-    """Un seul rôle (client ou fournisseur) d'un seul tiers (§8.0 point 2), déclenché quand la
+    """Un seul rôle (client ou fournisseur) d'un seul tiers (§7.4.1 point 2), déclenché quand la
     cascade de recherche (`res.partner._sage_resolve_role`) ne peut pas conclure toute seule :
     soit plusieurs candidats trouvés (`mode='choose'`), soit aucun (`mode='create'`).
     """

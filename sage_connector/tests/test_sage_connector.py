@@ -19,7 +19,7 @@ class TestSageConnector(TransactionCase):
         super().setUpClass()
         cls.company = cls.env.company
         # La résolution manuelle d'un code Sage (boutons/wizard) est réservée à la comptabilité
-        # (§5.2) -- l'utilisateur de test par défaut doit en faire partie pour les tests qui ne
+        # (§7.1) -- l'utilisateur de test par défaut doit en faire partie pour les tests qui ne
         # portent pas spécifiquement sur cette restriction (cf. `non_adv_user` ci-dessous, créé
         # séparément par les tests qui testent justement l'absence de ce groupe).
         cls.env.user.groups_id |= cls.env.ref('account.group_account_user')
@@ -70,7 +70,7 @@ class TestSageConnector(TransactionCase):
         return move
 
     # ------------------------------------------------------------------
-    # Portée (§6.1 point 0)
+    # Portée (§6.2.1 point 0)
     # ------------------------------------------------------------------
 
     def test_move_in_scope_after_journal_start_date(self):
@@ -97,7 +97,7 @@ class TestSageConnector(TransactionCase):
         self.journal.sage_sync_date_end = False
 
     # ------------------------------------------------------------------
-    # Mapping écriture (§7)
+    # Mapping écriture (§6.3)
     # ------------------------------------------------------------------
 
     def test_journal_entry_lines_are_balanced_debit_credit(self):
@@ -230,7 +230,7 @@ class TestSageConnector(TransactionCase):
             self.assertEqual(move._sage_document_type(), 'AF')
 
     # ------------------------------------------------------------------
-    # Envoi groupé (§6.1 point 3)
+    # Envoi groupé (§6.2.1 point 3)
     # ------------------------------------------------------------------
 
     def test_process_pending_batch_marks_matched_piece_as_sent(self):
@@ -287,7 +287,7 @@ class TestSageConnector(TransactionCase):
         self.assertEqual(len(line_ops), 4, "2 lignes par move x 2 moves")
 
     # ------------------------------------------------------------------
-    # Suppression (§6.2)
+    # Suppression (§6.2.2)
     # ------------------------------------------------------------------
 
     def test_unlink_blocked_once_sent(self):
@@ -389,6 +389,17 @@ class TestSageConnector(TransactionCase):
         self.assertEqual(payload['codeSIRET'], '51327262500049')
         self.assertEqual(payload['noSiren'], '513272625')
         self.assertEqual(payload['numeroTVACEE'], 'FR20513272625')
+
+    def test_build_payload_maps_street2_and_street3(self):
+        partner = self.env['res.partner'].create({
+            'name': 'Tiers Sage Test', 'street': '12 rue du Test', 'street2': 'Bâtiment B',
+            'street3': 'Cedex 3',
+        })
+        payload = partner._sage_build_payload()
+        adresse = payload['sitesList'][0]['adresse']
+        self.assertEqual(adresse['nomRueVoie'], '12 rue du Test')
+        self.assertEqual(adresse['complementAdresse'], 'Bâtiment B')
+        self.assertEqual(adresse['indicationDistribution'], 'Cedex 3')
 
     def test_build_payload_omits_siret_siren_vat_when_empty(self):
         partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
