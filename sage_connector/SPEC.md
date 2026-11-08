@@ -212,7 +212,6 @@ absorberait les écarts sans que personne ne s'en aperçoive.
 | Champ | Type | Valeurs |
 |---|---|---|
 | `sage_sync_status` | Selection | `to_send` (À envoyer), `sent` (Envoyé), `to_update` (À mettre à jour). Vide/`False` = jamais concerné (journal non coché, ou pas encore validé). |
-| `sage_import_line_oids` | Text (JSON) | OID Sage (`TImportEcritures`) de chaque ligne envoyée, dans l'ordre d'envoi — champ technique, pas de vue associée. Utilisé pour le `PUT` ciblé d'une pièce `to_update` (§6.1 point 4, hypothèse non confirmée). |
 
 Pas de valeur `error` dans la sélection : un envoi en échec **ne change pas** le statut (la pièce
 reste `to_send` et sera retentée au prochain déclencheur — prochaine validation d'une autre pièce
@@ -329,51 +328,41 @@ Déclenché sur l'action de validation (passage en `posted`).
      l'envoi alors qu'il est déjà irréversible sur Sage, et la pièce serait renvoyée en double au
      prochain passage. Le commit est inhibé en mode test (`_can_commit()`, même garde que le cœur
      Odoo utilise pour ce genre d'appel externe irréversible).
-4. **Pièces en `to_update`** : désormais reprises dans le même envoi groupé que les `to_send`
-   (point 3), **par hypothèse non confirmée en bac à sable — à tester avant mise en prod**
-   (2026-11-08) :
-   - à la création d'une pièce (premier envoi, `POST cptimport/timportecritures`), l'OID
-     `TImportEcritures` renvoyé dans `$location` de chaque ligne est mémorisé sur la pièce
-     (`sage_import_line_oids`, JSON, une entrée par ligne dans l'ordre d'envoi) ;
-   - au renvoi d'une pièce `to_update`, chaque ligne dont l'OID est connu est envoyée en `PUT
-     cptimport/timportecritures('<OID>')` (mise à jour de la ligne d'import déjà créée) au lieu
-     d'un nouveau `POST` — l'hypothèse testée étant qu'un `PUT` met à jour l'écriture déjà importée
-     plutôt que d'en recréer une (et donc la dupliquer, cf. le risque documenté ci-dessous si
-     l'hypothèse s'avère fausse) ;
-   - une ligne ajoutée depuis le premier envoi (pas d'OID connu à sa position) repart en `POST`
-     classique ;
-   - **Adressage par clé (OID), pas par prédicat** : SData accepte les deux formes pour adresser
-     une ressource (`entity('OID')` ou `entity(champ eq 'valeur')`, cf. wiki officiel
-     [Ressource (sdata)](https://frp.sage.fr/index.php/Ressource_(sdata)), section "Sélecteur de
-     ressource"), mais à l'intérieur d'un `$batch`, **le seul exemple officiel de `PUT` adresse par
-     clé** (`"$url": "gentiers/ttiers('9D33A23CFA6A005500F6000000285DAE')"`, section "Gestion de la
-     transaction") — l'exemple de `PUT` par prédicat (`ttiers(code eq 'ABI 00007')`) n'apparaît que
-     **hors `$batch`**, jamais dans un exemple groupé. Testé en direct le 2026-11-08 (3 variantes,
-     en `GET`) : un sélecteur par prédicat ou une collection sans clé dans un `$batch` échoue
-     systématiquement avec `400 "Get entity property require a single resource context"` /
-     `"Invalid entity selector (NULL)"`. D'où le choix de l'OID plutôt que, par exemple, un `PUT`
-     adressé par `numeroPiece` (évoqué en discussion) : rien dans la documentation ne montre cette
-     dernière forme fonctionnant dans un `$batch`, alors que la forme par clé y est officiellement
-     démontrée pour `PUT`. **Confirmé en direct le 2026-11-08** : un `PUT`
-     `cptimport/timportecritures(numeroPiece eq '...')` dans un `$batch` échoue aussi avec `400
-     "Invalid entity selector (NULL)"` (cette fois sans le mot "Get" dans le message, qui ne
-     disait donc pas une restriction propre à GET) — confirmation qu'**aucun prédicat n'est
-     accepté pour adresser une ressource dans un `$batch`, quel que soit le verbe HTTP** ; seule la
-     clé OID fonctionne. L'adressage par `sage_import_line_oids` est donc la seule approche
-     viable à l'intérieur de ce `$batch`.
-   - **à vérifier en bac à sable avant toute mise en prod** : (a) qu'un `PUT` sur
-     `cptimport/timportecritures('<OID>')` est bien accepté par Sage (testé en direct le
-     2026-11-08 : un `PUT` sans clé sur la collection échoue avec `400 Invalid entity selector
-     (NULL)`, confirmant qu'une clé est exigée — mais le comportement avec une clé réelle n'a pas
-     été testé) ; (b) qu'il met bien à jour l'écriture déjà postée côté Sage au lieu de la
-     dupliquer ou d'échouer silencieusement ; (c) le comportement si les lignes ont changé de
-     nombre entre les deux envois (cas non couvert par la position simple utilisée ici) ; (d) si
-     `PUT` renvoie bien un `$httpStatus`/`$location` exploitable dans la réponse du `$batch`, ou
-     s'il faut relire la pièce séparément pour confirmer le succès. **Si l'hypothèse s'avère
-     fausse** (le `PUT` échoue, ou duplique quand même l'écriture) : revenir au comportement
-     précédent (ne rien tenter automatiquement sur `to_update`, cf. §3 — aucune autre méthode API
-     de mise à jour n'est documentée, limite vraisemblablement structurelle) et réviser entièrement
-     ce point.
+4. **Pièces en `to_update`** : rechercher les `account.move` avec `sage_sync_status == 'to_update'`.
+   **Non implémenté, par choix définitif** (piste `PUT` explorée et écartée le 2026-11-08, détails
+   ci-dessous) : ne rien tenter automatiquement pour ces pièces, les laisser visibles en `to_update`
+   pour **traitement manuel par contre-passation** (annuler l'écriture fausse avec une pièce
+   inverse, puis repasser la bonne — deux *nouvelles* pièces, qui repartent normalement dans le
+   circuit `to_send` → `sent` ci-dessus, sans rien de spécifique à développer pour ça). Ce n'est pas
+   une limite gênante en pratique : en comptabilité française, une écriture validée n'est de toute
+   façon pas censée être modifiée en place une fois postée (immuabilité légale, cf. §3) — la
+   contre-passation est la façon normale de corriger une erreur, pas une solution de contournement.
+   **Piste explorée puis écartée (2026-11-08)** : un `PUT` ciblé sur l'écriture déjà envoyée, pour
+   éviter à l'utilisateur de passer par une contre-passation manuelle. Deux obstacles rencontrés,
+   l'un technique, l'autre structurel — **le second rend la piste non viable, indépendamment du
+   premier** :
+   - *Obstacle technique (adressage)* : à l'intérieur d'un `$batch`, seule une **clé OID littérale**
+     (`entity('OID')`) est acceptée pour adresser une ressource — confirmé en direct le 2026-11-08,
+     trois tentatives différentes avec un prédicat/clause (`entity(champ eq 'valeur')`, y compris
+     sur `numeroPiece`) ou une collection sans clé, toutes rejetées avec `400 "Invalid entity
+     selector (NULL)"` ou `"Get entity property require a single resource context"`. Seul le wiki
+     officiel [Ressource (sdata)](https://frp.sage.fr/index.php/Ressource_(sdata)) montre un `PUT`
+     par clé OID fonctionnant dans un `$batch` ; le `PUT` par prédicat n'y est montré que **hors**
+     `$batch`. Ce point seul aurait pu être contourné en mémorisant l'OID `TImportEcritures` renvoyé
+     à la création (`$location` de chaque ligne) pour le réutiliser au renvoi.
+   - *Obstacle structurel (le bloquant réel)* : le classeur *"Structure Base de données Sage
+     1000.xlsx"* (schéma des tables réellement persistées) ne liste **ni `TImportEcritures` ni
+     `TSessionImport`** parmi ses ~28 tables — ce sont des objets de **staging transitoires**, pas
+     des lignes durables en base (cohérent avec §7.4 : l'EXEC "relit" ces brouillons pour les
+     transformer en véritables `TPIECE`/`TECRITURE`). Et la vraie écriture persistée ne référence
+     que la **session** d'import pour sa traçabilité (`TPIECE.oidLot` → `TLOT.oidSessionImport`),
+     **jamais la ligne `TImportEcritures` d'origine individuellement**. Donc même si un `PUT` sur
+     l'OID `TImportEcritures` mémorisé était accepté par Sage après l'EXEC, rien dans la structure
+     de données ne permettrait qu'il modifie l'écriture déjà comptabilisée — cet OID a
+     vraisemblablement cessé d'exister en tant qu'objet interrogeable une fois le brouillon
+     "consommé" par l'EXEC qui a suivi son premier envoi.
+   **Conclusion** : abandon de la piste `PUT`, retour au comportement d'origine (`to_update` non
+   traité automatiquement). Le code de mémorisation d'OID introduit puis retiré le même jour.
 
 **Cron de rattrapage** (reprise de la demande initiale du besoin, toujours valable) : un job
 quotidien qui relance le même traitement du point 3 pour couvrir le cas où le dernier envoi en
@@ -482,8 +471,8 @@ son cours normal, sans aucune interaction avec Sage.
 | `SessionImport` | `{"$uuid": "<uuid de la session dans ce $batch>"}` |
 | `codeJournal` | `move.journal_id.sage_journal_code` |
 | `numeroPiece` | `move.name` |
-| `datePiece` | `move.date` |
-| `dateEcheance` | `move.invoice_date_due` (ou `datePiece` si absent) |
+| `datePiece` | `move.date`, converti en datetime ISO-8601 complet (`"<date>T00:00:00.000Z"`, cf. exemple §7.4) — format confirmé empiriquement le 2026-11-08, une simple date (`"AAAA-MM-JJ"`) n'étant pas le format montré par l'exemple officiel fonctionnel. |
+| `dateEcheance` | `move.invoice_date_due` (ou `datePiece` si absent), même conversion ISO-8601. |
 | `compteGeneral` | `line.account_id.code` *(TODO : vérifier la correspondance avec le plan comptable Sage — réaligner les plans comptables Odoo/Sage si besoin, et paramétrer côté Sage quels comptes sont "auxiliarisables" (acceptent un `compteAuxiliaire`), cf. §3)* |
 | `compteAuxiliaire` | selon `move.move_type` : `line.partner_id.sage_client_code` (client) ou `line.partner_id.sage_vendor_code` (fournisseur), **uniquement sur la ligne dont le compte est "collectif"** (`account_type` égal à `asset_receivable`/`liability_payable`) — **pas** simplement "porte un `partner_id`" : Odoo propage `partner_id` sur toutes les lignes d'une facture (y compris produit/TVA), pas seulement la ligne tiers ; envoyer `compteAuxiliaire` sur une ligne non collective fait échouer l'import côté Sage ("Le type de collectif Non du compte ... ne permet pas d'identifier le type du tiers", confirmé en bac à sable le 2026-11-08) |
 | `typeCompte` | `"X"` si la ligne est sur un compte collectif (`account_type` ∈ `asset_receivable`/`liability_payable`), `"G"` sinon — toujours renseigné, quel que soit le compte |
@@ -727,13 +716,13 @@ pour le `$batch` complet de création (session unique POST + EXEC `creerClient`/
 | Champ Sage | Source Odoo | Remarque |
 |---|---|---|
 | `code` | voir §8.2 (convention `411`/`401` + racine métier) | Uniquement à la création — un `PUT` cible la ressource existante par son OID, pas par `code`, donc ce champ n'a plus à être renvoyé sur une mise à jour *(TODO : confirmer qu'un `PUT` partiel sans `code` est accepté, ou s'il faut le renvoyer identique)*. |
-| `caption` | `partner.name` (personne morale) ou `"%s %s" % (partner.first_name, partner.name)` (personne physique, à confirmer — cf. `complete_name` dans `taz-common`) | |
+| `caption` | `partner.name` (personne morale) ou `("%s %s" % (partner.first_name or '', partner.name or '')).strip()` (personne physique) | Ne réutilise **pas** `partner.complete_name`/`_get_complete_name()` de `taz-common` (décision du 2026-11-08, audit) : ce champ préfixe le nom par la société mère pour un contact rattaché (`"Société, Nom"`), ce qui serait incorrect comme caption Sage — sémantique différente, pas un simple doublon de code. |
 | `sitesList[0].code` | `"PRINCIPAL"` (fixe) | Un seul site géré pour l'instant — pas de notion d'adresses de livraison/facturation distinctes côté Odoo dans ce mapping. |
 | `sitesList[0].caption` | `partner.name` | |
 | `sitesList[0].adresse.nomRueVoie` | `partner.street` | *(TODO : `street2` non mappé — un seul champ adresse côté Sage dans l'exemple officiel, à vérifier s'il existe un second champ pour une ligne d'adresse supplémentaire)* |
 | `sitesList[0].adresse.ville` | `partner.city` | |
 | `sitesList[0].adresse.codePostal` | `partner.zip` | |
-| `sitesList[0].adresse.pays` | `{"$url": "TPays(code eq '<code pays Sage>')"}` | *(TODO : table de correspondance code pays Odoo (ISO alpha-2) → code pays Sage (`"FRF"` pour la France, confirmé par l'exemple officiel ; le reste à vérifier au cas par cas))* |
+| `sitesList[0].adresse.pays` | `{"$url": "TPays(code eq '<code pays Odoo>')"}` | Le code ISO alpha-2 Odoo brut (`partner.country_id.code`, ex. `"FR"`) est envoyé tel quel, sans table de correspondance. **Pour la France, confirmé fonctionnel en direct** (créations `CHRISTIAN DIOR COUTURE_TER`/`_QUATER`, 2026-11-08, `pays: {"$url": "TPays(code eq 'FR')"}"`, statut 201) — malgré l'exemple officiel wiki1000 qui montre `"FRF"` pour la France (§2, §8.2). *(TODO restant : seule la France a été testée — à vérifier au cas par cas pour les autres pays avant de considérer ce point définitivement clos.)* |
 | `codeSIRET` | `partner.siret` | Envoyé uniquement si renseigné côté Odoo (`_sage_build_payload`, implémenté le 2026-11-08) — absent du payload sinon, pas de valeur vide envoyée. **En pratique ce champ (ainsi que `noSiren` et `numeroTVACEE` ci-dessous) est toujours renseigné lors d'une création**, puisque le wizard de création bloque la validation si l'un des trois est vide sur la fiche Odoo (bandeau d'avertissement + bouton "Valider" inactif — cf. **Pré-requis bloquant avant la création** en §8.2). Ce contrôle ne s'applique pas au `PUT` de mise à jour (§7bis.3), seulement à la création initiale. **Limitation Sage confirmée (2026-11-08)** : à la création, Sage **tronque systématiquement le SIRET envoyé à ses 9 premiers chiffres** (= le SIREN), quel que soit le SIRET réellement transmis, et quel que soit son emplacement dans le payload (testé à la racine du `TTiers` *et* dans `sitesList[0].adresse` — même résultat dans les deux cas). Constat fait en relisant en direct (lecture seule) le tiers créé `401CHRISTIANDIORCOUTURE_TER`/`_QUATER` : payload envoyé avec `codeSIRET = "61203583200049"`, valeur relue sur Sage = `codeSIRET = codeSIRET_Exp = "612035832"` (= `noSiren`). `noSiren` et `numeroTVACEE` envoyés dans le même `$batch`, eux, sont bien conservés tels quels. Les champs `estCodeSIRETValide`/`peutCreerEtabAPISiren` présents sur la réponse suggèrent que Sage recalcule/valide le SIRET à partir du SIREN (résolution d'établissement) au lieu de conserver la valeur transmise — comportement côté Sage, pas un défaut de notre payload. **Ajouté à la liste des questions pour MC2I (§2)** : demander si un autre champ ou mécanisme permet d'enregistrer le SIRET complet (14 chiffres) sur un tiers. |
 | `noSiren` | `partner.siren` | Même champ que le critère de recherche SIREN (§8.1). **Envoyé uniquement si renseigné**, même logique que `codeSIRET`. |
 | `numeroTVACEE` | `partner.vat` (TVA intracom) | Confirmé accepté en écriture, au même endroit qu'en lecture (sur `TTiers`). **Envoyé uniquement si renseigné**, même logique que `codeSIRET`. |
@@ -943,9 +932,10 @@ dans une seule page (confirmé présent sur d'autres vues de ce dossier, cf. ré
 - **Pré-requis bloquant avant la création** : SIRET, SIREN et TVA intracommunautaire doivent être
   renseignés sur la fiche du tiers côté Odoo (ces trois champs sont envoyés à la création si
   remplis, cf. §7bis.1 — les envoyer vides créerait une fiche Sage incomplète). Si l'un des trois
-  manque, le wizard affiche un bandeau d'avertissement listant les champs manquants et désactive le
-  bouton Valider (remplacé par un bouton inerte de même libellé) — vérification refaite côté serveur
-  dans `action_validate` (ne jamais se fier uniquement à l'état désactivé côté client). Ce pré-requis
+  manque, le wizard affiche un bandeau d'avertissement listant les champs manquants et masque le
+  bouton Valider (`invisible` tant qu'il manque un champ — simplifié le 2026-11-08, audit : plus de
+  bouton factice "inerte" en doublon, un seul bouton réel) — vérification refaite côté serveur
+  dans `action_validate` (ne jamais se fier uniquement à l'état masqué côté client). Ce pré-requis
   ne s'applique qu'au mode "créer un nouveau tiers" — pas au mode "choisir un candidat existant".
 - Si confirmé : attribuer un code et créer via le `$batch` POST `TTiers` + EXEC `creerClient` (ou
   `creerFournisseur` selon le rôle manquant — le rôle à créer est déterminé par le contexte qui a
