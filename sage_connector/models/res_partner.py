@@ -114,6 +114,10 @@ class ResPartner(models.Model):
                 return
 
     def _sage_search_by_name(self, client, role_entity):
+        """Recherche par nom, critère de dernier recours (§8.1) -- limite connue et acceptée :
+        sensible à la casse de la *valeur* comparée (Odoo stocke en majuscules, Sage en casse
+        mixte), ni `eq` ni `like` ne contournent ça côté Sage (cf. SPEC.md §8.1 détail critère 4).
+        """
         self.ensure_one()
         if self.is_company:
             where = "tiers.raisonSociale eq '%s'" % self.name
@@ -121,27 +125,32 @@ class ResPartner(models.Model):
             where = "tiers.nom eq '%s' and tiers.prenom eq '%s'" % (self.name or '', self.first_name or '')
         return client.get_all_pages(role_entity, params={'where': where})
 
-    def _sage_search_cascade_manual(self):
-        """Cascade complète (§8.1), utilisée par le bouton manuel (§8.0 point 2) : critères exacts
-        (SIRET, TVA) puis recherche par nom. Renvoie, pour chaque rôle encore manquant après les
-        critères exacts, la liste des candidats trouvés par nom (vide si aucun) -- à faire
-        confirmer par un humain avant tout rattachement (§8.1 critère 4).
+    def _sage_resolve_exact_for_role(self, client, field_name, entity):
+        """Critères exacts (SIRET, TVA) pour un rôle donné, utilisé par le bouton manuel (§8.0
+        point 2) -- contrairement à `_sage_try_exact_criterion` (cascade automatique, silencieuse),
+        celui-ci rend compte du résultat même quand le code est déjà renseigné : un tiers trouvé sur
+        Sage mais différent du code existant doit être signalé, pas silencieusement ignoré.
 
         TODO critère "matricule" (personnes physiques) non implémenté : champs Odoo et Sage non
         identifiés (cf. SPEC.md §3/§8.1).
+
+        Renvoie (status, code_trouvé) avec status parmi 'filled' (était vide, rempli), 'differs'
+        (déjà rempli, Sage renvoie autre chose), 'same' (déjà rempli, Sage confirme), 'not_found'.
         """
         self.ensure_one()
-        client = SDataClient(self.env)
         for criterion, value in (('siret', self.siret), ('vat', self.vat)):
-            if value and not (self.sage_client_code and self.sage_vendor_code):
-                self._sage_try_exact_criterion(client, criterion, value)
-
-        candidates = {}
-        if not self.sage_client_code:
-            candidates['client'] = self._sage_search_by_name(client, SAGE_ENTITY_PARTNER_CLIENT)
-        if not self.sage_vendor_code:
-            candidates['vendor'] = self._sage_search_by_name(client, SAGE_ENTITY_PARTNER_VENDOR)
-        return candidates
+            if not value:
+                continue
+            join_field = _SAGE_JOIN_FIELD_BY_CRITERION[criterion]
+            resources = client.get_all_pages(entity, params={'where': "%s eq '%s'" % (join_field, value)})
+            if resources:
+                found_code = resources[0].get('Caption')
+                current = self[field_name]
+                if not current:
+                    self.write({field_name: found_code})
+                    return 'filled', found_code
+                return ('same', found_code) if current == found_code else ('differs', found_code)
+        return 'not_found', None
 
     # ------------------------------------------------------------------
     # Création d'un rôle (§8.2)
@@ -177,52 +186,81 @@ class ResPartner(models.Model):
     # Déclencheur manuel (§8.0 point 2)
     # ------------------------------------------------------------------
 
+    @api.model
+    def _sage_notification(self, message, notification_type):
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {'title': _("Sage"), 'message': message, 'type': notification_type},
+        }
+
     def action_sage_resolve(self):
+        """Bouton manuel (§8.0 point 2). Pour chaque rôle (client/fournisseur) déjà résolu, on
+        vérifie quand même les critères exacts (SIRET/TVA) pour détecter un écart sans jamais
+        écraser le code existant (alerte si Sage renvoie autre chose). Pour chaque rôle encore
+        manquant : recherche par nom, candidats affichés dans le wizard pour confirmation humaine
+        (§8.1 critère 4) -- jamais de rattachement automatique sur un simple match de nom.
+        """
         self.ensure_one()
-        missing = [role for role in ('client', 'vendor') if not self['sage_%s_code' % role]]
-        if not missing:
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'title': _("Sage"),
-                    'message': _("Ce tiers est résolu sur Sage (client et/ou fournisseur)."),
-                    'type': 'success',
-                },
-            }
+        if self.sage_client_code and self.sage_vendor_code:
+            return self._sage_notification(
+                _("Ce tiers est déjà résolu sur Sage (client et fournisseur)."), 'success',
+            )
 
-        candidates = self._sage_search_cascade_manual()
-        missing = [role for role in ('client', 'vendor') if not self['sage_%s_code' % role]]
-        if not missing:
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'title': _("Sage"),
-                    'message': _("Tiers résolu automatiquement par recherche exacte (SIRET/TVA)."),
-                    'type': 'success',
-                },
-            }
+        client = SDataClient(self.env)
+        role_info = {
+            'client': ('sage_client_code', SAGE_ENTITY_PARTNER_CLIENT),
+            'vendor': ('sage_vendor_code', SAGE_ENTITY_PARTNER_VENDOR),
+        }
+        exact_results = {
+            role: self._sage_resolve_exact_for_role(client, field_name, entity)
+            for role, (field_name, entity) in role_info.items()
+        }
 
-        wizard_ids = []
-        for role in missing:
-            wizard = self.env['sage.partner.resolve.wizard'].create({
-                'partner_id': self.id,
-                'role': role,
-                'new_code': self._sage_default_code(role),
-                'candidate_ids': [(0, 0, {
+        if self.sage_client_code and self.sage_vendor_code:
+            differs = [role for role, (status, _code) in exact_results.items() if status == 'differs']
+            if differs:
+                return self._sage_notification(_(
+                    "Tiers résolu, mais Sage renvoie un code %(role)s différent par SIRET/TVA -- "
+                    "vérifiez manuellement sur Sage avant de changer quoi que ce soit.",
+                    role=" et ".join(differs),
+                ), 'warning')
+            return self._sage_notification(_("Tiers résolu sur Sage (client et fournisseur)."), 'success')
+
+        line_vals = []
+        for role, (field_name, entity) in role_info.items():
+            status, found_code = exact_results[role]
+            if self[field_name]:
+                line_vals.append((0, 0, {
+                    'partner_id': self.id, 'role': role, 'resolved': True,
+                    'code': self[field_name], 'name': _("Déjà résolu"),
+                }))
+                if status == 'differs':
+                    line_vals.append((0, 0, {
+                        'partner_id': self.id, 'role': role, 'resolved': True,
+                        'code': found_code,
+                        'name': _("⚠ Sage renvoie un code différent par SIRET/TVA -- à vérifier manuellement"),
+                    }))
+                continue
+            found = self._sage_search_by_name(client, entity)
+            if found:
+                line_vals.extend((0, 0, {
+                    'partner_id': self.id, 'role': role,
                     'code': candidate.get('Caption'),
                     'name': candidate.get('raisonSociale') or candidate.get('Caption'),
-                }) for candidate in candidates.get(role, [])],
-            })
-            wizard_ids.append(wizard.id)
+                }) for candidate in found)
+            else:
+                line_vals.append((0, 0, {
+                    'partner_id': self.id, 'role': role, 'is_create_option': True,
+                    'new_code': self._sage_default_code(role),
+                }))
 
+        batch = self.env['sage.partner.resolve.batch.wizard'].create({'line_ids': line_vals})
         return {
             'type': 'ir.actions.act_window',
             'name': _("Résolution du tiers sur Sage"),
-            'res_model': 'sage.partner.resolve.wizard',
-            'view_mode': 'form' if len(wizard_ids) == 1 else 'list,form',
-            'res_id': wizard_ids[0] if len(wizard_ids) == 1 else False,
-            'domain': [('id', 'in', wizard_ids)],
+            'res_model': 'sage.partner.resolve.batch.wizard',
+            'view_mode': 'form',
+            'res_id': batch.id,
             'target': 'new',
         }

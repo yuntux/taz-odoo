@@ -18,14 +18,24 @@ _logger = logging.getLogger(__name__)
 
 SAGE_JOURNAL_ENTRY_TYPE = "Brouillard"
 
-# TODO : aucun code de type de pièce pour la vente n'est documenté officiellement (seuls "AF"/"FF"
-# apparaissent dans l'exemple officiel, pour des pièces d'achat, sans qu'on puisse distinguer
-# lequel correspond à une facture ou à un avoir). Hypothèses de travail à confirmer avec Mercuria.
+# "VA" (avoir client) reste une hypothèse non confirmée (par symétrie avec FC). Côté fournisseur,
+# "FF" = Factures fournisseurs, "AF" = Avoir fournisseurs (liste IHM Sage, SPEC.md §7.2) -- plusieurs
+# autres types fournisseur existent (FFM, FFS, FFTVA...) mais leur critère de choix n'est pas encore
+# identifié, cf. TODO dans SPEC.md §7.2.
 SAGE_DOCUMENT_TYPE_BY_MOVE_TYPE = {
-    'out_invoice': 'VF',
+    'out_invoice': 'FC',
     'out_refund': 'VA',
-    'in_invoice': 'AF',
-    'in_refund': 'FF',
+    'in_invoice': 'FF',
+    'in_refund': 'AF',
+}
+
+# Pièces intragroupe (le tiers est lui-même une société du groupe, identifié par
+# `res.company.partner_id`) : type de pièce distinct. TODO : équivalent non confirmé pour un avoir
+# client intragroupe, ni pour un avoir fournisseur intragroupe (FFI, ou AF comme pour un avoir
+# fournisseur normal ? -- à trancher avec Mercuria/MC2I, cf. SPEC.md §7.2).
+SAGE_INTRAGROUP_DOCUMENT_TYPE_BY_MOVE_TYPE = {
+    'out_invoice': 'FCI',
+    'in_invoice': 'FFI',
 }
 
 SAGE_PARTNER_CODE_FIELD_BY_MOVE_TYPE = {
@@ -36,6 +46,11 @@ SAGE_PARTNER_CODE_FIELD_BY_MOVE_TYPE = {
 }
 
 _SAGE_SUCCESS_MESSAGE_RE = re.compile(r"Enregistrement pièce n°\s*(\S+)")
+
+# Limite confirmée empiriquement sur le bac à sable (bissection le 2026-11-08) : un `libelleEcriture`
+# de plus de 128 caractères fait échouer l'EXEC avec un message générique "(TranBatch) Erreur de
+# transaction :1", sans rapport avec le vrai contenu -- aucune limite documentée officiellement.
+SAGE_LIBELLE_MAX_LENGTH = 128
 
 
 class AccountMove(models.Model):
@@ -126,6 +141,22 @@ class AccountMove(models.Model):
     # Mapping écriture (§7)
     # ------------------------------------------------------------------
 
+    def _sage_is_intragroup_partner(self):
+        """Le tiers facturé est-il lui-même une société du groupe (identifiée par
+        `res.company.partner_id`) ? Détermine le type de pièce FC/FCI (§7).
+        """
+        self.ensure_one()
+        return bool(self.env['res.company'].sudo().search_count([
+            ('partner_id', '=', self.partner_id.commercial_partner_id.id),
+            ('id', '!=', self.company_id.id),
+        ]))
+
+    def _sage_document_type(self):
+        self.ensure_one()
+        if self.move_type in SAGE_INTRAGROUP_DOCUMENT_TYPE_BY_MOVE_TYPE and self._sage_is_intragroup_partner():
+            return SAGE_INTRAGROUP_DOCUMENT_TYPE_BY_MOVE_TYPE[self.move_type]
+        return SAGE_DOCUMENT_TYPE_BY_MOVE_TYPE.get(self.move_type)
+
     def _sage_build_journal_entry_lines(self, session_uuid, start_index):
         """Construit les opérations `$batch` (une par account.move.line au solde non nul) pour
         cette pièce, prêtes à être insérées dans le lot partagé (§6.1 point 3).
@@ -141,7 +172,7 @@ class AccountMove(models.Model):
             'deviseTenueCompte': company.currency_id.name,
             'etablissement': company.sage_etablissement_code,
             'typeEcriture': SAGE_JOURNAL_ENTRY_TYPE,
-            'typePiece': SAGE_DOCUMENT_TYPE_BY_MOVE_TYPE.get(self.move_type),
+            'typePiece': self._sage_document_type(),
             'urlScanPiece': "%s/mail/view?model=account.move&res_id=%s" % (self.get_base_url(), self.id),
         }
         partner_code_field = SAGE_PARTNER_CODE_FIELD_BY_MOVE_TYPE.get(self.move_type)
@@ -155,12 +186,14 @@ class AccountMove(models.Model):
                 'sens': 'D' if line.balance > 0 else 'C',
                 'montant': abs(line.balance),
                 'montantEnDevise': abs(line.balance),
-                'libelleEcriture': line.name or self.ref or self.name,
+                'libelleEcriture': (line.name or self.ref or self.name or '')[:SAGE_LIBELLE_MAX_LENGTH],
             })
-            code = line.partner_id[partner_code_field] if line.partner_id and partner_code_field else False
-            if code:
-                entry['compteAuxiliaire'] = code
-                entry['typeCompte'] = 'X'
+            is_collectif_line = line.account_id.account_type in ('asset_receivable', 'liability_payable')
+            entry['typeCompte'] = 'X' if is_collectif_line else 'G'
+            if is_collectif_line:
+                code = line.partner_id[partner_code_field] if line.partner_id and partner_code_field else False
+                if code:
+                    entry['compteAuxiliaire'] = code
             entry.update({
                 '$httpMethod': 'POST',
                 '$url': SAGE_ENTITY_JOURNAL_IMPORT_ENTRY,

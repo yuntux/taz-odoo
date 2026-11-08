@@ -1,12 +1,14 @@
+import json
 from datetime import date
 from unittest.mock import patch
 
 from odoo.addons.project_accounting.models.res_partner import PROTECTED_FIELD_LIST
+from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase, tagged
 
 from ..models import account_move as account_move_module
 from ..models import res_partner as res_partner_module
-from ..models.sage_client import SageConnectorError
+from ..models.sage_client import SageConnectorError, SDataClient
 
 
 @tagged('post_install', '-at_install')
@@ -107,13 +109,120 @@ class TestSageConnector(TransactionCase):
         self.assertEqual(income['sens'], 'C')
         self.assertEqual(income['montant'], 120.0)
         self.assertNotIn('compteAuxiliaire', income)
+        self.assertEqual(income['typeCompte'], 'G')
+        self.assertEqual(receivable['typeCompte'], 'X')
         for op in operations:
             self.assertEqual(op['numeroPiece'], move.name)
             self.assertEqual(op['SessionImport'], {'$uuid': 'session'})
 
+    def test_compte_auxiliaire_only_on_collectif_line(self):
+        """Odoo propage `partner_id` sur toutes les lignes d'une facture (pas seulement la ligne
+        client/fournisseur) -- `compteAuxiliaire` ne doit pourtant être envoyé que sur la ligne dont
+        le compte est réellement "collectif" (recevable/payable), sinon Sage rejette l'import
+        ("Le type de collectif Non du compte ... ne permet pas d'identifier le type du tiers").
+        """
+        self.partner.sage_client_code = '411TEST'
+        sale_journal = self.env['account.journal'].search([
+            ('type', '=', 'sale'), ('company_id', '=', self.company.id),
+        ], limit=1)
+        move = self.env['account.move'].create({
+            'move_type': 'out_invoice', 'journal_id': sale_journal.id,
+            'partner_id': self.partner.id, 'date': date(2027, 1, 15),
+        })
+        move.line_ids = [
+            (0, 0, {
+                'account_id': self.receivable_account.id, 'name': 'Ligne tiers',
+                'partner_id': self.partner.id, 'debit': 120.0, 'credit': 0.0,
+            }),
+            (0, 0, {
+                'account_id': self.income_account.id, 'name': 'Ligne produit',
+                'partner_id': self.partner.id, 'debit': 0.0, 'credit': 120.0,
+            }),
+        ]
+        operations = move._sage_build_journal_entry_lines('session', 0)
+        by_account = {op['compteGeneral']: op for op in operations}
+        self.assertIn('compteAuxiliaire', by_account[self.receivable_account.code])
+        self.assertEqual(by_account[self.receivable_account.code]['typeCompte'], 'X')
+        self.assertNotIn('compteAuxiliaire', by_account[self.income_account.code])
+        self.assertEqual(by_account[self.income_account.code]['typeCompte'], 'G')
+
     def test_journal_entry_lines_empty_without_lines(self):
         move = self._create_move(date(2027, 1, 15), with_lines=False)
         self.assertEqual(move._sage_build_journal_entry_lines('session', 0), [])
+
+    def test_libelle_ecriture_truncated_to_sage_limit(self):
+        long_name = 'X' * 200
+        move = self._create_move(date(2027, 1, 15))
+        move.line_ids = [
+            (0, 0, {
+                'account_id': self.receivable_account.id, 'name': long_name,
+                'partner_id': self.partner.id, 'debit': 120.0, 'credit': 0.0,
+            }),
+            (0, 0, {
+                'account_id': self.income_account.id, 'name': 'Ligne produit',
+                'partner_id': False, 'debit': 0.0, 'credit': 120.0,
+            }),
+        ]
+        operations = move._sage_build_journal_entry_lines('session', 0)
+        receivable_op = next(op for op in operations if op['compteGeneral'] == self.receivable_account.code)
+        self.assertEqual(len(receivable_op['libelleEcriture']), account_move_module.SAGE_LIBELLE_MAX_LENGTH)
+
+    def test_document_type_fc_for_regular_client(self):
+        sale_journal = self.env['account.journal'].search([
+            ('type', '=', 'sale'), ('company_id', '=', self.company.id),
+        ], limit=1)
+        move = self.env['account.move'].create({
+            'move_type': 'out_invoice', 'journal_id': sale_journal.id,
+            'partner_id': self.partner.id, 'date': date(2027, 1, 15),
+        })
+        self.assertEqual(move._sage_document_type(), 'FC')
+
+    def test_document_type_fci_for_intragroup_client(self):
+        # Volontairement pas de vrai res.company créé ici : ça déclenche une cascade de recalculs
+        # (customer_book_goal/project_accounting) sans rapport, fragile sur cet environnement de
+        # test -- on mocke directement le prédicat testé par ailleurs (recherche simple, peu de
+        # risque) pour isoler `_sage_document_type()`.
+        sale_journal = self.env['account.journal'].search([
+            ('type', '=', 'sale'), ('company_id', '=', self.company.id),
+        ], limit=1)
+        move = self.env['account.move'].create({
+            'move_type': 'out_invoice', 'journal_id': sale_journal.id,
+            'partner_id': self.partner.id, 'date': date(2027, 1, 15),
+        })
+        with patch.object(account_move_module.AccountMove, '_sage_is_intragroup_partner', return_value=True):
+            self.assertEqual(move._sage_document_type(), 'FCI')
+
+    def test_document_type_ff_for_regular_vendor(self):
+        purchase_journal = self.env['account.journal'].search([
+            ('type', '=', 'purchase'), ('company_id', '=', self.company.id),
+        ], limit=1)
+        move = self.env['account.move'].create({
+            'move_type': 'in_invoice', 'journal_id': purchase_journal.id,
+            'partner_id': self.partner.id, 'date': date(2027, 1, 15),
+        })
+        self.assertEqual(move._sage_document_type(), 'FF')
+
+    def test_document_type_ffi_for_intragroup_vendor(self):
+        purchase_journal = self.env['account.journal'].search([
+            ('type', '=', 'purchase'), ('company_id', '=', self.company.id),
+        ], limit=1)
+        move = self.env['account.move'].create({
+            'move_type': 'in_invoice', 'journal_id': purchase_journal.id,
+            'partner_id': self.partner.id, 'date': date(2027, 1, 15),
+        })
+        with patch.object(account_move_module.AccountMove, '_sage_is_intragroup_partner', return_value=True):
+            self.assertEqual(move._sage_document_type(), 'FFI')
+
+    def test_document_type_af_for_vendor_refund_even_if_intragroup(self):
+        purchase_journal = self.env['account.journal'].search([
+            ('type', '=', 'purchase'), ('company_id', '=', self.company.id),
+        ], limit=1)
+        move = self.env['account.move'].create({
+            'move_type': 'in_refund', 'journal_id': purchase_journal.id,
+            'partner_id': self.partner.id, 'date': date(2027, 1, 15),
+        })
+        with patch.object(account_move_module.AccountMove, '_sage_is_intragroup_partner', return_value=True):
+            self.assertEqual(move._sage_document_type(), 'AF')
 
     # ------------------------------------------------------------------
     # Envoi groupé (§6.1 point 3)
@@ -230,6 +339,17 @@ class TestSageConnector(TransactionCase):
         self.assertEqual(partner.sage_client_code, '411TOTAL')
         self.assertFalse(partner.sage_vendor_code)
 
+    def test_search_by_name_uses_raison_sociale_for_company(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test Raison Sociale', 'is_company': True})
+        captured = {}
+
+        def fake_get_all_pages(self, entity, params=None):
+            captured['where'] = params['where']
+            return []
+        fake_client = type('FakeClient', (), {'get_all_pages': fake_get_all_pages})()
+        partner._sage_search_by_name(fake_client, res_partner_module.SAGE_ENTITY_PARTNER_CLIENT)
+        self.assertEqual(captured['where'], "tiers.raisonSociale eq 'Tiers Sage Test Raison Sociale'")
+
     def test_write_never_pushes_to_sage(self):
         partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
         partner.write({'sage_client_code': '411TOTAL'})
@@ -264,9 +384,179 @@ class TestSageConnector(TransactionCase):
         })()
         with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
             action = partner.action_sage_resolve()
-        self.assertEqual(action.get('res_model'), 'sage.partner.resolve.wizard')
-        wizard = self.env['sage.partner.resolve.wizard'].search(action['domain'])
-        self.assertTrue(wizard)
-        client_wizard = wizard.filtered(lambda w: w.role == 'client')
-        self.assertEqual(len(client_wizard.candidate_ids), 1)
-        self.assertEqual(client_wizard.candidate_ids.code, '411CANDIDATE')
+        self.assertEqual(action.get('res_model'), 'sage.partner.resolve.batch.wizard')
+        batch = self.env['sage.partner.resolve.batch.wizard'].browse(action['res_id'])
+        client_lines = batch.line_ids.filtered(lambda w: w.role == 'client')
+        self.assertEqual(len(client_lines), 1)
+        self.assertEqual(client_lines.code, '411CANDIDATE')
+        self.assertFalse(client_lines.is_create_option)
+        vendor_lines = batch.line_ids.filtered(lambda w: w.role == 'vendor')
+        self.assertEqual(len(vendor_lines), 1)
+        self.assertTrue(vendor_lines.is_create_option)
+        self.assertTrue(vendor_lines.new_code)
+
+    def test_action_sage_resolve_shows_resolved_role_as_a_grayed_line(self):
+        partner = self.env['res.partner'].create({
+            'name': 'Tiers Sage Test', 'sage_client_code': '411DEJA', 'is_company': True,
+        })
+        fake_client = type('FakeClient', (), {
+            'get_all_pages': lambda self, entity, params=None: [],
+        })()
+        with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
+            action = partner.action_sage_resolve()
+        batch = self.env['sage.partner.resolve.batch.wizard'].browse(action['res_id'])
+        client_lines = batch.line_ids.filtered(lambda w: w.role == 'client')
+        self.assertTrue(client_lines.resolved)
+        self.assertEqual(client_lines.code, '411DEJA')
+
+    def test_action_sage_resolve_warns_without_overwriting_on_siret_mismatch(self):
+        # Seul le rôle fournisseur manque au départ -- le rôle client, déjà résolu, est quand même
+        # revérifié par la cascade : Sage renvoie un code différent, une alerte doit le signaler
+        # sans jamais écraser '411DEJA'. Le rôle fournisseur, lui, se remplit via la cascade.
+        partner = self.env['res.partner'].create({
+            'name': 'Tiers Sage Test', 'siret': '51327262500049', 'sage_client_code': '411DEJA',
+        })
+        fake_client = type('FakeClient', (), {
+            'get_all_pages': lambda self, entity, params=None: (
+                [{'Caption': '411AUTRECODE'}] if 'TClient' in entity else [{'Caption': '401NOUVEAU'}]
+            ),
+        })()
+        with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
+            result = partner.action_sage_resolve()
+        self.assertEqual(result['params']['type'], 'warning')
+        self.assertEqual(partner.sage_client_code, '411DEJA')
+        self.assertEqual(partner.sage_vendor_code, '401NOUVEAU')
+
+    def test_batch_action_validate_attaches_selected_candidate_and_creates_other_role(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
+        batch = self.env['sage.partner.resolve.batch.wizard'].create({
+            'line_ids': [
+                (0, 0, {
+                    'partner_id': partner.id, 'role': 'client',
+                    'code': '411EXISTANT', 'name': 'Tiers Sage Test', 'selected': True,
+                }),
+                (0, 0, {
+                    'partner_id': partner.id, 'role': 'vendor', 'is_create_option': True,
+                    'new_code': '401NOUVEAU', 'selected': True,
+                }),
+            ],
+        })
+        fake_client = type('FakeClient', (), {
+            'batch': lambda self, operations: {},
+            'get_all_pages': lambda self, entity, params=None: [{'Caption': '401NOUVEAU'}],
+        })()
+        with patch.object(res_partner_module, 'SDataClient', return_value=fake_client):
+            result = batch.action_validate()
+        self.assertEqual(partner.sage_client_code, '411EXISTANT')
+        self.assertEqual(partner.sage_vendor_code, '401NOUVEAU')
+        self.assertEqual(result.get('type'), 'ir.actions.act_window_close')
+
+    def test_batch_action_validate_ignores_unselected_lines(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
+        batch = self.env['sage.partner.resolve.batch.wizard'].create({
+            'line_ids': [(0, 0, {
+                'partner_id': partner.id, 'role': 'client',
+                'code': '411CANDIDATE', 'name': 'Tiers Sage Test', 'selected': False,
+            })],
+        })
+        batch.action_validate()
+        self.assertFalse(partner.sage_client_code)
+
+    def test_batch_action_validate_blocks_more_than_one_selected_per_role(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
+        batch = self.env['sage.partner.resolve.batch.wizard'].create({
+            'line_ids': [
+                (0, 0, {
+                    'partner_id': partner.id, 'role': 'client',
+                    'code': '411A', 'name': 'A', 'selected': True,
+                }),
+                (0, 0, {
+                    'partner_id': partner.id, 'role': 'client',
+                    'code': '411B', 'name': 'B', 'selected': True,
+                }),
+            ],
+        })
+        with self.assertRaises(UserError):
+            batch.action_validate()
+        self.assertFalse(partner.sage_client_code)
+
+    def test_batch_action_validate_blocked_if_role_already_resolved(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test', 'sage_client_code': '411DEJA'})
+        batch = self.env['sage.partner.resolve.batch.wizard'].create({
+            'line_ids': [(0, 0, {
+                'partner_id': partner.id, 'role': 'client',
+                'code': '411AUTRE', 'name': 'Tiers Sage Test', 'selected': True,
+            })],
+        })
+        with self.assertRaises(UserError):
+            batch.action_validate()
+        self.assertEqual(partner.sage_client_code, '411DEJA')
+
+    def test_batch_action_validate_requires_a_new_code_for_create_option(self):
+        partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
+        batch = self.env['sage.partner.resolve.batch.wizard'].create({
+            'line_ids': [(0, 0, {
+                'partner_id': partner.id, 'role': 'vendor', 'is_create_option': True, 'selected': True,
+            })],
+        })
+        with patch.object(res_partner_module, 'SDataClient') as mocked_client_cls:
+            with self.assertRaises(UserError):
+                batch.action_validate()
+        mocked_client_cls.assert_not_called()
+
+    def test_request_encodes_spaces_as_percent20_not_plus(self):
+        self.company.write({
+            'sage_api_endpoint': 'https://sage.example.com',
+            'sage_api_token': 'fake-token',
+            'sage_contract_code': 'MC2I',
+        })
+        client = SDataClient(self.env)
+        fake_response = type('FakeResponse', (), {
+            'ok': True, 'status_code': 200, 'content': b'{}', 'json': lambda self: {},
+        })()
+        with patch.object(type(client.session), 'request', return_value=fake_response) as mocked_request:
+            client.get('gentiers/TClient', params={'where': "tiers.codeSIRET eq '123'"})
+        called_url = mocked_request.call_args.args[1]
+        self.assertIn('%20', called_url)
+        self.assertNotIn('+', called_url)
+
+    def test_batch_error_message_surfaces_diagnosis_not_truncated_text(self):
+        self.company.write({
+            'sage_api_endpoint': 'https://sage.example.com',
+            'sage_api_token': 'fake-token',
+            'sage_contract_code': 'MC2I',
+        })
+        client = SDataClient(self.env)
+        # Reproduit le cas observé en prod : session + plusieurs lignes en succès (201), suivies
+        # d'une ligne en échec dont le diagnostic est niché sous sa propre clé "$" (pas directement
+        # sous "$diagnoses", ni de "$httpStatus" du tout sur cette ressource) -- le tout dépassant
+        # largement 500 caractères avant d'atteindre cette ligne en échec.
+        padding = [{'$httpStatus': 201, '$httpMethod': 'POST', '$etag': 'X' * 60}] * 10
+        failing_resource = {
+            '$milliseconds': '6.6990',
+            '$': {'$diagnoses': [{'severity': 'error', 'message': 'Le solde de la pièce doit être nul.'}]},
+        }
+        body = {'$resources': padding + [failing_resource]}
+        fake_response = type('FakeResponse', (), {
+            'ok': False, 'status_code': 400,
+            'text': json.dumps(body),
+        })()
+        with patch.object(type(client.session), 'request', return_value=fake_response):
+            with self.assertRaises(SageConnectorError) as ctx:
+                client.batch([{'$httpMethod': 'POST'}])
+        self.assertIn('Le solde de la pièce doit être nul.', str(ctx.exception))
+
+    def test_request_logs_a_copy_pasteable_curl_command_with_token_masked(self):
+        self.company.write({
+            'sage_api_endpoint': 'https://sage.example.com',
+            'sage_api_token': 'SUPER-SECRET-TOKEN',
+            'sage_contract_code': 'MC2I',
+        })
+        client = SDataClient(self.env)
+        command = client._as_curl_command(
+            'POST', 'https://sage.example.com/compta/server/sdata/MC2I/$batch', {'a': 1},
+        )
+        self.assertTrue(command.startswith("curl -X POST"))
+        self.assertIn("-d '{\"a\": 1}'", command)
+        self.assertNotIn('SUPER-SECRET-TOKEN', command)
+        self.assertIn('SAGE_API_TOKEN', command)

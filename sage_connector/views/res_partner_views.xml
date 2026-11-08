@@ -15,4 +15,39 @@
         </field>
     </record>
 
+    <record id="view_partner_company_form_sage_connector" model="ir.ui.view">
+        <field name="name">taz-common.company_form.sage.connector</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="taz-common.company_form"/>
+        <field name="arch" type="xml">
+            <field name="external_auxiliary_code" position="after">
+                <field name="sage_client_code"/>
+                <field name="sage_vendor_code"/>
+                <button name="action_sage_resolve" type="object"
+                        string="Rechercher / créer sur Sage" class="btn-link"/>
+            </field>
+        </field>
+    </record>
+
+    <record id="view_partner_contact_form_sage_connector" model="ir.ui.view">
+        <field name="name">taz-common.contact_form.sage.connector</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="taz-common.contact_form"/>
+        <field name="arch" type="xml">
+            <!-- Pas de section comptable existante sur ce formulaire (pas de code auxiliaire, pas
+                 de TVA/SIRET) : on ajoute un groupe dédié juste avant le notebook, en miroir du
+                 groupe "Identifiants" de taz-common.company_form. -->
+            <xpath expr="//notebook" position="before">
+                <group>
+                    <group string="Identifiants">
+                        <field name="sage_client_code"/>
+                        <field name="sage_vendor_code"/>
+                        <button name="action_sage_resolve" type="object"
+                                string="Rechercher / créer sur Sage" class="btn-link"/>
+                    </group>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
 </odoo>

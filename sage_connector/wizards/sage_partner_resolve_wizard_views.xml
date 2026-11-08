@@ -1,44 +1,30 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <odoo>
 
-    <record id="view_sage_partner_resolve_wizard_form" model="ir.ui.view">
-        <field name="name">sage.partner.resolve.wizard.form</field>
-        <field name="model">sage.partner.resolve.wizard</field>
+    <record id="view_sage_partner_resolve_batch_wizard_form" model="ir.ui.view">
+        <field name="name">sage.partner.resolve.batch.wizard.form</field>
+        <field name="model">sage.partner.resolve.batch.wizard</field>
         <field name="arch" type="xml">
             <form>
                 <sheet>
-                    <group>
-                        <field name="partner_id" readonly="1"/>
-                        <field name="role" readonly="1"/>
-                    </group>
-                    <field name="candidate_ids" readonly="1">
-                        <list>
-                            <field name="code"/>
-                            <field name="name"/>
+                    <field name="line_ids">
+                        <list editable="bottom" decoration-muted="resolved">
+                            <field name="partner_id" readonly="1"/>
+                            <field name="role" readonly="1"/>
+                            <field name="resolved" column_invisible="1"/>
+                            <field name="is_create_option" column_invisible="1"/>
+                            <field name="code" readonly="1" string="Code Sage"/>
+                            <field name="name" readonly="1" string="Libellé"/>
+                            <field name="new_code" readonly="not is_create_option" string="Code à créer"/>
+                            <field name="selected" readonly="resolved" string="Choisir"/>
                         </list>
                     </field>
-                    <group>
-                        <field name="selected_candidate_id"/>
-                        <field name="new_code"/>
-                    </group>
                 </sheet>
                 <footer>
-                    <button name="action_link_selected" type="object" string="Rattacher le tiers sélectionné" class="btn-primary"/>
-                    <button name="action_create_new" type="object" string="Créer un nouveau tiers" class="btn-secondary"/>
+                    <button name="action_validate" type="object" string="Valider" class="btn-primary"/>
                     <button string="Annuler" special="cancel" class="btn-secondary"/>
                 </footer>
             </form>
-        </field>
-    </record>
-
-    <record id="view_sage_partner_resolve_wizard_list" model="ir.ui.view">
-        <field name="name">sage.partner.resolve.wizard.list</field>
-        <field name="model">sage.partner.resolve.wizard</field>
-        <field name="arch" type="xml">
-            <list>
-                <field name="partner_id"/>
-                <field name="role"/>
-            </list>
         </field>
     </record>
 

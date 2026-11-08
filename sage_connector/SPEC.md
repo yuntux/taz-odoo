@@ -113,6 +113,26 @@ modifie ou supprime manuellement une écriture envoyée :
   confirmation ni infirmation supplémentaire : à tester empiriquement (cf. §10.3).
 - Code journal Sage, code compte d'équilibre, code établissement/dossier : propres à ce dossier
   MC2I, aucune valeur connue — à saisir en configuration une fois obtenues.
+- **TODO** : réaligner les plans comptables Odoo et Sage (`compteGeneral` suppose aujourd'hui que
+  `line.account_id.code` correspond tel quel à un compte général Sage existant, cf. §7.2) — et côté
+  Sage, paramétrer quels comptes généraux sont "auxiliarisables" (acceptent un `compteAuxiliaire`,
+  cf. `typeCompte: "X"` en §7.2), faute de quoi l'envoi échouera sur les comptes concernés.
+- **Point bloquant découvert en bac à sable (2026-11-08) : notion de "société" manquante.** Le
+  dossier Sage `MC2I` (= `sage_contract_code`) contient en réalité **plusieurs sociétés**
+  (IHM Sage : Paramètres > Fichiers de base > Sociétés — `IDTO`, `MC2I`, `MC2IBELGIUM`, `MDEV`,
+  `MGDE`, `MGIN`, `MINV`, `OGUR`, **`TSMN` = Tasmane**), chacune avec ses propres établissements et
+  codes `typePiece`. Le token API actuel est rattaché par défaut à la société `MC2I` (homonyme du
+  dossier, mais une société différente de `TSMN`) : c'est pour ça qu'une pièce avec
+  `etablissement: "TSMN"` échoue ("l'établissement TSMN n'existe pas dans la société MC2I") alors
+  que cet établissement existe bel et bien, rattaché à la société TSMN.
+  Aucun champ "société"/`codeSociete` documenté dans les PDF officiels wiki1000 (écritures, tiers)
+  — le ciblage de société semble être une propriété de l'interlocuteur/token API utilisé, pas un
+  champ du payload : changer le `contrat` dans l'URL vers `TSMN` a d'ailleurs **créé automatiquement
+  un nouvel "Interlocuteur user-api TSMN" pour la société TSMN** (effet de bord constaté, à
+  vérifier avec Mercuria/le support Sage s'il faut le nettoyer). **À demander à Mercuria avant de
+  poursuivre les tests en prod** : existe-t-il déjà un token API dédié à la société TSMN (sinon il
+  faut en faire créer un proprement), et confirmer que `sage_api_token` doit être remplacé par
+  celui-ci plutôt que le token actuel scopé sur MC2I.
 - "Matricule" pour les particuliers : ni le champ Odoo, ni le champ Sage ne sont identifiés.
 - Stratégie d'attribution d'un code à la création d'un nouveau tiers côté Sage : à définir (cf. §8).
 - **`res.partner.external_auxiliary_code`** (`taz-common/models/res_partner.py`) : champ hérité de
@@ -375,9 +395,9 @@ son cours normal, sans aucune interaction avec Sage.
 | `numeroPiece` | `move.name` |
 | `datePiece` | `move.date` |
 | `dateEcheance` | `move.invoice_date_due` (ou `datePiece` si absent) |
-| `compteGeneral` | `line.account_id.code` *(TODO : vérifier la correspondance avec le plan comptable Sage)* |
-| `compteAuxiliaire` | selon `move.move_type` : `line.partner_id.sage_client_code` (client) ou `line.partner_id.sage_vendor_code` (fournisseur), uniquement sur la/les ligne(s) qui portent un `partner_id` |
-| `typeCompte` | `"X"` si `compteAuxiliaire` renseigné, absent sinon |
+| `compteGeneral` | `line.account_id.code` *(TODO : vérifier la correspondance avec le plan comptable Sage — réaligner les plans comptables Odoo/Sage si besoin, et paramétrer côté Sage quels comptes sont "auxiliarisables" (acceptent un `compteAuxiliaire`), cf. §3)* |
+| `compteAuxiliaire` | selon `move.move_type` : `line.partner_id.sage_client_code` (client) ou `line.partner_id.sage_vendor_code` (fournisseur), **uniquement sur la ligne dont le compte est "collectif"** (`account_type` égal à `asset_receivable`/`liability_payable`) — **pas** simplement "porte un `partner_id`" : Odoo propage `partner_id` sur toutes les lignes d'une facture (y compris produit/TVA), pas seulement la ligne tiers ; envoyer `compteAuxiliaire` sur une ligne non collective fait échouer l'import côté Sage ("Le type de collectif Non du compte ... ne permet pas d'identifier le type du tiers", confirmé en bac à sable le 2026-11-08) |
+| `typeCompte` | `"X"` si la ligne est sur un compte collectif (`account_type` ∈ `asset_receivable`/`liability_payable`), `"G"` sinon — toujours renseigné, quel que soit le compte |
 | `sens` | `"D"` si `line.balance > 0`, `"C"` sinon |
 | `montant` | `abs(line.balance)` |
 | `montantEnDevise` | *(TODO multi-devise : distinct de `montant` si devise pièce ≠ devise société)* |
@@ -385,9 +405,38 @@ son cours normal, sans aucune interaction avec Sage.
 | `deviseTenueCompte` | `move.company_id.currency_id.name` |
 | `etablissement` | `move.company_id.sage_etablissement_code` (cf. §4.2) |
 | `typeEcriture` | `"Brouillard"` (fixe, confirmé) |
-| `typePiece` | *(TODO : code non confirmé pour la vente — hypothèses `VF`/`VA` à valider)* |
-| `libelleEcriture` | `line.name` ou `move.ref` ou `move.name` |
+| `typePiece` | **Client (`out_invoice`/`out_refund`)** : `"FC"` (facture client) — sauf si le tiers facturé est lui-même une société du groupe (`res.company.partner_id`), auquel cas `"FCI"` (facture client intragroupe) ; `"VA"` (avoir client) reste une hypothèse non confirmée, pas d'équivalent FCI confirmé pour un avoir intragroupe *(TODO)*. **Fournisseur (`in_invoice`/`in_refund`)** : voir liste complète et point ouvert ci-dessous. |
+| `libelleEcriture` | `line.name` ou `move.ref` ou `move.name`, **tronqué à 128 caractères** (limite confirmée empiriquement sur le bac à sable par bissection le 2026-11-08 : au-delà, l'EXEC échoue avec un message générique "(TranBatch) Erreur de transaction :1" sans rapport avec le vrai contenu, aucune limite documentée officiellement — ni les retours à la ligne ni les caractères spéciaux ne sont en cause, uniquement la longueur) |
 | `urlScanPiece` | URL de la fiche Odoo de la facture — cf. détail ci-dessous |
+
+**TODO** : vérifier s'il faut ajouter un champ sur la ligne d'écriture portant la TVA (`line.tax_ids`)
+pour lui donner un code de TVA côté Sage (type `codeTVA`/`compteTVA`, non identifié pour l'instant) —
+actuellement aucun champ de ce type n'est envoyé dans le mapping ci-dessus.
+
+**Types de pièce côté fournisseur, liste complète relevée sur l'IHM Sage (2026-11-08)** :
+
+| Code | Libellé |
+|---|---|
+| `AF` | Avoir fournisseurs |
+| `FF` | Factures fournisseurs |
+| `FFI` | Factures fournisseurs intragroupe |
+| `FFM` | Facture fournisseurs sans BAP |
+| `FFS` | Fact. four. SST |
+| `FFTVA` | Facture Fournisseur de TVA |
+| `OD` | Opérations diverses |
+| `REP` | Reprise Ciel |
+| `TVA` | Pièce avec TVA |
+
+**Implémenté** : `in_invoice` → `"FF"` (facture fournisseur) sauf si le tiers est lui-même une
+société du groupe, auquel cas `"FFI"` (facture fournisseur intragroupe) — même logique que FC/FCI
+côté client, via `_sage_is_intragroup_partner()`. `in_refund` → `"AF"` (avoir fournisseur).
+
+**TODO à trancher avec Mercuria/MC2I** : un **avoir fournisseur intragroupe** doit-il porter le type
+`"FFI"` (comme son équivalent facture) ou rester `"AF"` (comme un avoir fournisseur normal) ? Pas
+d'équivalent "avoir intragroupe" dans la liste IHM ci-dessus, donc pas implémenté pour l'instant —
+`in_refund` reste toujours `"AF"` quel que soit le tiers en attendant cette clarification. Reste
+aussi à déterminer le critère de choix pour `FFM`/`FFS`/`FFTVA`, non identifié pour l'instant.
+**Code journal confirmé** : `HA` (achats), cf. §9.
 
 **`urlScanPiece`** (champ libre côté Sage, aucun contrôle de format — confirmé par Mercuria :
 *"aucun contrôle champ libre"*) : trois options envisagées, **l'option A retenue par défaut pour
@@ -456,7 +505,7 @@ POST {endpoint}/compta/server/sdata/MC2I/$batch
       "deviseTenueCompte": "EUR",
       "etablissement": "ETS1-S01",
       "typeEcriture": "Brouillard",
-      "typePiece": "VF",
+      "typePiece": "FC",
       "libelleEcriture": "INV/2027/0001",
       "urlScanPiece": "https://tfp.tasmane.com/mail/view?model=account.move&res_id=25816"
     },
@@ -476,7 +525,7 @@ POST {endpoint}/compta/server/sdata/MC2I/$batch
       "deviseTenueCompte": "EUR",
       "etablissement": "ETS1-S01",
       "typeEcriture": "Brouillard",
-      "typePiece": "VF",
+      "typePiece": "FC",
       "libelleEcriture": "INV/2027/0001",
       "urlScanPiece": "https://tfp.tasmane.com/mail/view?model=account.move&res_id=25816"
     },
@@ -699,8 +748,8 @@ Grille des critères, dans l'ordre :
 **Détail du critère 4, selon `partner.is_company` :**
 
 - **Personne morale** (`is_company = True`) : recherche sur la raison sociale —
-  `gentiers/TClient(tiers.raisonSociale eq '<partner.name>')` et
-  `gentiers/TFournisseur(tiers.raisonSociale eq '<partner.name>')`.
+  `gentiers/TClient(Tiers.raisonSociale eq '<partner.name>')` et
+  `gentiers/TFournisseur(Tiers.raisonSociale eq '<partner.name>')`.
   *(remplace la recherche sur `caption` prévue initialement — `raisonSociale` est le champ métier
   pertinent pour une société, `caption` n'étant qu'un libellé d'affichage).*
 - **Personne physique** (`is_company = False`) : recherche sur nom **et** prénom —
@@ -708,9 +757,22 @@ Grille des critères, dans l'ordre :
   `taz-common`, cf. `taz-common/models/res_partner.py` — pas besoin d'installer de module
   supplémentaire ni de scinder `name` par heuristique, point levé). `sage_connector` devra déclarer
   `taz-common` en dépendance pour s'appuyer sur ce champ.
-  `gentiers/TClient(tiers.nom eq '<partner.name>' and tiers.prenom eq '<partner.first_name>')`, idem
+  `gentiers/TClient(Tiers.nom eq '<partner.name>' and Tiers.prenom eq '<partner.first_name>')`, idem
   `TFournisseur`. **TODO restant** : noms exacts des champs Sage (`nom`/`prenom` sont une hypothèse
   de travail, à confirmer avec Mercuria comme le reste de la cascade §8.1).
+
+  **Limite connue et acceptée : sensibilité à la casse de la valeur comparée (2026-11-08).**
+  Odoo stocke les raisons sociales en majuscules (ex. `"CHRISTIAN DIOR COUTURE"`), alors que Sage
+  les enregistre en casse mixte (ex. `"Christian Dior Couture"`). Ni `eq` ni `like` ne sont
+  insensibles à la casse côté Sage pour ce champ (les deux testés en bac à sable, aucun ne trouve le
+  tiers si la casse diffère), et `tolower()`/`toupper()` ne sont pas supportés par le parseur
+  (`"BadQueryParameter"`). Conséquence acceptée : ce critère de dernier recours échouera
+  silencieusement chaque fois que la casse diffère entre Odoo et Sage — pas de correctif fiable côté
+  client identifié (une normalisation type `.title()` serait trop fragile, ex. `"MC2I"` →
+  `"Mc2I"`). Dans ce cas, l'utilisateur tombe sur l'option "créer un nouveau tiers" du wizard et peut
+  saisir manuellement le bon code s'il le connaît déjà — cohérent avec le principe existant que ce
+  critère reste de toute façon soumis à confirmation humaine (§8.1 critère 4), jamais automatique.
+  (Le préfixe de jointure `Tiers.`/`tiers.`, lui, n'a aucun impact : les deux casses fonctionnent.)
 
 Pour chaque rôle trouvé : `partner.sage_client_code = <Caption du TClient>` et/ou
 `partner.sage_vendor_code = <Caption du TFournisseur>`, indépendamment l'un de l'autre.
@@ -886,7 +948,9 @@ Réponse attendue par analogie avec le cas A/B : un seul élément dans `$resour
   `account_move.py`, `_sage_create_role(role='vendor')` dans `res_partner.py`) — ce n'est donc pas
   une fonctionnalité manquante. Il reste simplement inactif tant qu'aucun journal d'achat n'a de
   `sage_sync_date_start` renseigné (§6.1 point 0) : l'activation est une question de configuration,
-  à faire quand le besoin fournisseurs sera confirmé.
+  à faire quand le besoin fournisseurs sera confirmé. **Code journal confirmé : `HA`** (`sage_journal_code`
+  du journal d'achat Odoo). Cf. §7.2 pour la liste des `typePiece` fournisseur et le point ouvert sur
+  lequel utiliser selon le cas.
 - Interface (vues, wizard de création de tiers, menu de supervision des pièces en erreur) : pas
   détaillée dans cette spec technique — à faire une fois le mapping validé.
 - Détection automatique de divergence entre l'écriture envoyée et son état réel côté Sage (cf.
@@ -974,3 +1038,48 @@ protocole, pas forcément autorisée par Sage sur les entités écriture réelle
 plutôt que de renvoyer `sitesList` à l'identique à chaque mise à jour — à relire depuis le `TTiers`
 existant avant de construire le payload du `PUT`, plutôt que de reconstruire `sitesList` depuis zéro
 à partir des seules données Odoo.
+
+---
+
+## 11. Primo-configuration à la première installation
+
+Quatre choses à paramétrer avant que le connecteur ne devienne actif sur une base.
+
+### 11.1 Société (`res.company`)
+
+Menu **Comptabilité/Facturation → Configuration → Paramètres**, onglet "Sage FRP 1000" (ou
+directement sur la fiche société, cf. §4.2) :
+
+| Champ | Valeur |
+|---|---|
+| `sage_api_endpoint` | URL de base de l'API Sage (ex. `https://mc2i-compta-prd.em.cloud-by-sage.fr`). |
+| `sage_api_token` | Le token Bearer. |
+| `sage_contract_code` | Le contrat SData dans l'URL (ex. `MC2I`). |
+| `sage_etablissement_code` | L'identifiant comptable Sage (ex. `"ETS1-S01"`) — à ne pas confondre avec le contrat ci-dessus. |
+| `sage_compte_equilibre` | **À laisser vide** sauf si Mercuria confirme qu'il est obligatoire côté Sage (cf. décision §4.2). |
+
+### 11.2 Journaux (`account.journal`, un par journal à activer)
+
+| Champ | Rôle |
+|---|---|
+| `sage_sync_date_start` | **C'est ce champ qui active réellement l'export** pour ce journal (vide = journal ignoré) ; seules les pièces dont `move.date` est strictement postérieure à cette date seront envoyées. Choisir une date de bascule (ex. la veille du premier jour où on veut commencer à envoyer). |
+| `sage_journal_code` | Le code journal côté Sage (`codeJournal`) — ne pas supposer qu'il est identique au code journal Odoo. |
+| `sage_sync_date_end` | Optionnel, seulement si on veut fermer la fenêtre d'envoi plus tard. |
+
+Au départ, ne configurer que les journaux **ventes** (`out_invoice`/`out_refund`) — les journaux
+achats sont structurellement supportés mais le besoin initial reste focalisé clients (cf. §9).
+
+### 11.3 Tiers déjà facturés historiquement
+
+Rien à faire en masse : la résolution (recherche SIRET/TVA puis bouton manuel si besoin) se
+déclenche au fil de l'eau, à la validation de chaque pièce concernée (§8.0).
+
+### 11.4 Vérification du cron
+
+`ir_cron_sage_connector_process_pending` est actif par défaut (rattrapage quotidien des pièces
+restées `to_send`) — rien à activer manuellement, juste à surveiller les premiers jours.
+
+### 11.5 Avant la mise en prod
+
+Il reste aussi les vérifications manuelles sur le bac à sable listées au §10 (doublon de pièce,
+atomicité du batch, etc.) à faire une fois, indépendamment du paramétrage ci-dessus.

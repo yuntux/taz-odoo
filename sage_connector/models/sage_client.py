@@ -1,5 +1,8 @@
+import json
 import logging
+import shlex
 import time
+from urllib.parse import quote, urlencode
 
 import requests
 
@@ -60,14 +63,70 @@ class SDataClient:
             self.base_url.rstrip('/'), self.contract_code.strip('/'), entity,
         )
 
+    def _as_curl_command(self, method, url, body):
+        """Journalise l'appel sous forme de commande `curl` copiable-collable telle quelle dans un
+        script minimaliste pour rejouer/comprendre une erreur (SPEC.md -- débogage en prod). Le
+        token Bearer est volontairement masqué (jamais en clair dans un fichier de log qui peut
+        être copié/collé ailleurs, y compris dans cette conversation) : à remplacer par la valeur
+        de `res.company.sage_api_token` (Comptabilité > Configuration > Sage FRP 1000).
+        """
+        parts = ["curl -X %s %s" % (method, shlex.quote(url))]
+        for key, value in self.session.headers.items():
+            if key == 'Authorization':
+                value = 'Bearer ***SAGE_API_TOKEN***'
+            parts.append("  -H %s" % shlex.quote("%s: %s" % (key, value)))
+        if body is not None:
+            parts.append("  -d %s" % shlex.quote(json.dumps(body, ensure_ascii=False)))
+        return " \\\n".join(parts)
+
+    @staticmethod
+    def _describe_error_body(response):
+        """Résumé exploitable d'une erreur Sage : un simple `response.text[:500]` coupe souvent
+        avant le `$diagnoses`/`$messages` qui explique réellement le refus (constaté en prod sur un
+        `$batch` dont la session et plusieurs lignes avaient réussi (`$httpStatus` 201) avant que le
+        texte ne soit tronqué pile avant l'opération en échec). On cherche spécifiquement les
+        diagnostics plutôt que de tronquer aveuglément.
+        """
+        try:
+            data = json.loads(response.text)
+        except ValueError:
+            return response.text[:2000]
+
+        diagnoses = []
+        top_level = data.get('$') if isinstance(data, dict) else None
+        if isinstance(top_level, dict) and top_level.get('$diagnoses'):
+            diagnoses.extend(top_level['$diagnoses'])
+        for resource in (data.get('$resources') or []) if isinstance(data, dict) else []:
+            if not isinstance(resource, dict):
+                continue
+            # Le diagnostic d'une ressource en échec dans un `$batch` est niché sous sa propre clé
+            # `$` (ex. {"$milliseconds": ..., "$": {"$diagnoses": [...]}}), PAS directement sous
+            # `$diagnoses` au premier niveau de la ressource -- erreur constatée en prod : le
+            # diagnostic n'était pas détecté, seul le fallback texte brut (sous 2000 caractères
+            # par chance) l'a laissé visible.
+            nested = resource.get('$') if isinstance(resource.get('$'), dict) else {}
+            if nested.get('$diagnoses') or (resource.get('$httpStatus') or 0) >= 400:
+                diagnoses.append(resource)
+
+        if not diagnoses:
+            return response.text[:2000]
+        return json.dumps(diagnoses, ensure_ascii=False)[:2000]
+
     def _request(self, method, entity, resource_id=None, params=None, json=None):
         url = self._url(entity)
         if resource_id is not None:
             url = "%s('%s')" % (url, resource_id)
+        if params:
+            # requests/urlencode encodent l'espace en "+" par défaut -- Sage ne le décode pas (son
+            # parseur de filtre `where=` le prend au pied de la lettre, cf. erreur 400 observée sur
+            # le bac à sable), il faut du "%20" (quote_via=quote).
+            url = "%s?%s" % (url, urlencode(params, quote_via=quote))
+            params = None
 
         attempt = 0
         while True:
             attempt += 1
+            _logger.info(self._as_curl_command(method, url, json))
             try:
                 response = self.session.request(
                     method, url, params=params, json=json, timeout=DEFAULT_TIMEOUT,
@@ -88,7 +147,7 @@ class SDataClient:
             if not response.ok:
                 raise SageConnectorError(
                     "Sage API error %s on %s %s: %s" % (
-                        response.status_code, method, url, response.text[:500],
+                        response.status_code, method, url, self._describe_error_body(response),
                     )
                 )
             return response
@@ -109,6 +168,7 @@ class SDataClient:
         next_url = data.get('$nextUrl') if isinstance(data, dict) else None
         pages = 1
         while next_url and pages < max_pages:
+            _logger.info(self._as_curl_command('GET', next_url, None))
             response = self.session.request('GET', next_url, timeout=DEFAULT_TIMEOUT)
             if not response.ok:
                 break
