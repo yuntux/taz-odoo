@@ -582,7 +582,7 @@ class TestSageConnector(TransactionCase):
                 wizard.action_validate()
         mocked_client_cls.assert_not_called()
 
-    def test_wizard_create_blocked_when_siret_siren_vat_missing(self):
+    def test_wizard_create_blocked_when_siret_siren_missing(self):
         partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
         wizard = self.env['sage.partner.resolve.wizard'].create({
             'partner_id': partner.id, 'role': 'vendor', 'mode': 'create', 'new_code': '401NOUVEAU',
@@ -590,24 +590,22 @@ class TestSageConnector(TransactionCase):
         self.assertTrue(wizard.missing_required_label)
         self.assertIn('SIRET', wizard.missing_required_label)
         self.assertIn('SIREN', wizard.missing_required_label)
-        self.assertIn('TVA intracommunautaire', wizard.missing_required_label)
         with patch.object(res_partner_module, 'SDataClient') as mocked_client_cls:
             with self.assertRaises(UserError):
                 wizard.action_validate()
         mocked_client_cls.assert_not_called()
         self.assertFalse(partner.sage_vendor_code)
 
-    def test_wizard_create_allowed_once_siret_siren_vat_filled(self):
+    def test_wizard_create_allowed_without_vat_once_siret_siren_filled(self):
         partner = self.env['res.partner'].create({
             'name': 'Tiers Sage Test', 'siret': '51327262500049', 'siren': '513272625',
-            'vat': 'FR20513272625',
         })
         wizard = self.env['sage.partner.resolve.wizard'].create({
             'partner_id': partner.id, 'role': 'vendor', 'mode': 'create', 'new_code': '401NOUVEAU',
         })
         self.assertFalse(wizard.missing_required_label)
 
-    def test_wizard_choose_mode_ignores_missing_siret_siren_vat(self):
+    def test_wizard_choose_mode_ignores_missing_siret_siren(self):
         partner = self.env['res.partner'].create({'name': 'Tiers Sage Test'})
         wizard = self.env['sage.partner.resolve.wizard'].create({
             'partner_id': partner.id, 'role': 'client', 'mode': 'choose',

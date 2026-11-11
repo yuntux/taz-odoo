@@ -246,7 +246,7 @@ class ResPartner(models.Model):
         payload = dict(self._sage_build_payload(), code=code)
         exec_method = 'creerClient' if role == 'client' else 'creerFournisseur'
         operations = [
-            {'$httpMethod': 'POST', '$url': SAGE_ENTITY_PARTNER, '$uuid': 'newTiers', '$shareLevel': 2, **payload},
+            {'$httpMethod': 'POST', '$url': SAGE_ENTITY_PARTNER, '$uuid': 'newTiers', '$shareLevel': 1, **payload},
             {'$httpMethod': 'EXEC', '$url': '%s(newTiers)/%s' % (SAGE_ENTITY_PARTNER, exec_method)},
         ]
         try:

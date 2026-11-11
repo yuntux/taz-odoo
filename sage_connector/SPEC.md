@@ -11,7 +11,8 @@ corps du document (repéré par un renvoi `(§0.x)` à côté du marqueur d'orig
 Tout ce qui attend une réponse externe avant de pouvoir trancher ou implémenter.
 
 1. Logique de partage des tiers entre sociétés du dossier (`411DIOR` partagé vs
-   `411CHRISTIANDIORCOUTURE` non partagé), modalité `$shareLevel` à utiliser à la création → §3
+   `411CHRISTIANDIORCOUTURE` non partagé) ; modalité `$shareLevel` à la création résolue (`1` =
+   partagé, corrigé dans le code) → §3
 2. Pourquoi `411DIOR` porte le SIREN mais pas le SIRET → §3
 3. Existe-t-il un champ/mécanisme pour enregistrer le SIRET complet (14 chiffres), vu la
    troncature à 9 chiffres constatée à la création → §7.3.1
@@ -119,11 +120,11 @@ modifie ou supprime manuellement une écriture envoyée :
   connecteur). Quelle est la logique de partage des tiers entre sociétés du dossier MC2I (qu'est-ce
   qui est partagé, par qui, pourquoi), et lequel de ces tiers doit être utilisé/créé par le
   connecteur pour Tasmane — le tiers partagé existant, ou un tiers propre à Tasmane ?
-  **Question corollaire** : à la création d'un tiers par API (`$shareLevel: 2` actuellement envoyé
-  tel quel dans `res_partner.py::_sage_create_role`, repris de l'exemple officiel sans l'avoir
-  questionné), faut-il préciser une modalité de partage particulière (niveau, activité
-  `MC2I_TIERS` ou autre) pour que les tiers créés par le connecteur suivent la même logique que
-  `411DIOR`, ou est-ce volontairement non partagé par défaut ?
+  **Question corollaire résolue (2026-11-08)** : `$shareLevel: 1` = partagé (et non `2`, repris à
+  tort de l'exemple officiel sans l'avoir questionné) ; corrigé dans `res_partner.py::_sage_create_role`.
+  Reste ouvert : faut-il préciser une modalité de partage particulière (activité `MC2I_TIERS` ou
+  autre) pour que les tiers créés par le connecteur suivent la même logique que `411DIOR`, ou le
+  partage simple (`$shareLevel: 1`) suffit-il ?
   **Autre question corollaire** : pourquoi le tiers partagé `411DIOR` porte le **SIREN** mais pas le
   **SIRET** ? (le SIRET est le critère utilisé par la cascade §7.4.2, donc cette absence empêche de
   retrouver ce tiers par ce critère).
@@ -981,14 +982,16 @@ dans une seule page (confirmé présent sur d'autres vues de ce dossier, cf. ré
 
 - Demander confirmation à l'utilisateur (wizard) avant toute création — jamais de création
   automatique silencieuse.
-- **Pré-requis bloquant avant la création** : SIRET, SIREN et TVA intracommunautaire doivent être
-  renseignés sur la fiche du tiers côté Odoo (ces trois champs sont envoyés à la création si
-  remplis, cf. §7.3.1 — les envoyer vides créerait une fiche Sage incomplète). Si l'un des trois
-  manque, le wizard affiche un bandeau d'avertissement listant les champs manquants et masque le
-  bouton Valider (`invisible` tant qu'il manque un champ — simplifié le 2026-11-08, audit : plus de
-  bouton factice "inerte" en doublon, un seul bouton réel) — vérification refaite côté serveur
-  dans `action_validate` (ne jamais se fier uniquement à l'état masqué côté client). Ce pré-requis
-  ne s'applique qu'au mode "créer un nouveau tiers" — pas au mode "choisir un candidat existant".
+- **Pré-requis bloquant avant la création** : SIRET et SIREN doivent être renseignés sur la fiche
+  du tiers côté Odoo. La TVA intracommunautaire **n'est pas bloquante** (corrigé le 2026-11-08) :
+  certaines entreprises n'en ont légitimement pas (micro-entreprises, entités hors UE, etc.) ; si
+  elle est renseignée elle est tout de même envoyée à la création (cf. §7.3.1), mais son absence ne
+  doit pas empêcher la création du tiers. Si SIRET ou SIREN manque, le wizard affiche un bandeau
+  d'avertissement listant les champs manquants et masque le bouton Valider (`invisible` tant qu'il
+  manque un champ — simplifié le 2026-11-08, audit : plus de bouton factice "inerte" en doublon, un
+  seul bouton réel) — vérification refaite côté serveur dans `action_validate` (ne jamais se fier
+  uniquement à l'état masqué côté client). Ce pré-requis ne s'applique qu'au mode "créer un nouveau
+  tiers" — pas au mode "choisir un candidat existant".
 - Si confirmé : attribuer un code et créer via le `$batch` POST `TTiers` + EXEC `creerClient` (ou
   `creerFournisseur` selon le rôle manquant — le rôle à créer est déterminé par le contexte qui a
   déclenché la recherche, ex. `move_type` de la facture en cours de validation : client pour
@@ -1050,7 +1053,7 @@ POST {endpoint}/compta/server/sdata/MC2I/$batch
       "$httpMethod": "POST",
       "$url": "gentiers/TTiers",
       "$uuid": "newTiers",
-      "$shareLevel": 2,
+      "$shareLevel": 1,
       "code": "411TOTAL",
       "caption": "TOTAL",
       "codeSIRET": "11122233344455",

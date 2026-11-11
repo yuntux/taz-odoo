@@ -3,10 +3,10 @@ from odoo.exceptions import UserError
 
 # Champs Odoo requis avant de pouvoir créer un tiers sur Sage (§7.4.4) -- en plus d'y aider la
 # cascade de recherche future (§7.4.2), les envoyer vide créerait une fiche Sage incomplète.
+# `vat` n'en fait pas partie : certaines entreprises n'ont pas de numéro de TVA intracommunautaire.
 _SAGE_CREATE_REQUIRED_FIELDS = [
     ('siret', "SIRET"),
     ('siren', "SIREN"),
-    ('vat', "TVA intracommunautaire"),
 ]
 
 
@@ -41,7 +41,7 @@ class SagePartnerResolveWizard(models.TransientModel):
     # maintenir les deux en parallèle.
     missing_required_label = fields.Char(compute='_compute_missing_required_label')
 
-    @api.depends('mode', 'partner_id.siret', 'partner_id.siren', 'partner_id.vat')
+    @api.depends('mode', 'partner_id.siret', 'partner_id.siren')
     def _compute_missing_required_label(self):
         for wizard in self:
             missing = wizard._sage_missing_required_fields()
