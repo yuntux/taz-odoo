@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo>
+
+    <record id="view_move_form_expense_core" model="ir.ui.view">
+        <field name="name">account.move.form.expense.core</field>
+        <field name="model">account.move</field>
+        <field name="inherit_id" ref="account.view_move_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="before">
+                <div class="alert alert-warning mb-0" role="alert" invisible="not expense_warning or state != 'draft'">
+                    <field name="expense_warning" readonly="1" nolabel="1"/>
+                </div>
+            </xpath>
+            <xpath expr="//header/button[last()]" position="after">
+                <button name="action_run_ocr" string="Lire le justificatif" type="object"
+                        invisible="state != 'draft' or expense_origin not in ['employee_receipt', 'card']"/>
+            </xpath>
+            <xpath expr="//notebook" position="inside">
+                <page string="Lecture OCR" name="expense_ocr" invisible="not ocr_result_ids">
+                    <field name="ocr_result_ids">
+                        <list>
+                            <field name="create_date"/>
+                            <field name="provider"/>
+                            <field name="state"/>
+                            <field name="confidence"/>
+                            <field name="error"/>
+                        </list>
+                    </field>
+                </page>
+            </xpath>
+            <xpath expr="//group[@name='accounting_info_group']" position="after">
+                <group string="Dépense" name="expense_group">
+                    <field name="expense_origin"/>
+                    <field name="expense_merchant_id" invisible="expense_origin not in ['employee_receipt', 'card']"
+                           options="{'no_create': True}"/>
+                    <field name="expense_category_id" invisible="expense_origin not in ['employee_receipt', 'card']"
+                           options="{'no_create': True}"/>
+                    <field name="allowed_project_ids" invisible="1"/>
+                    <field name="expense_project_id" invisible="expense_origin not in ['employee_receipt', 'card']"
+                           domain="[('id', 'in', allowed_project_ids)]" options="{'no_create': True}"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_account_invoice_filter_expense_core" model="ir.ui.view">
+        <field name="name">account.move.select.expense.core</field>
+        <field name="model">account.move</field>
+        <field name="inherit_id" ref="account.view_account_invoice_filter"/>
+        <field name="arch" type="xml">
+            <xpath expr="//filter[@name='draft']" position="after">
+                <filter name="expense_to_validate_me" string="À valider par moi"
+                        domain="[('can_review', '=', True), ('validation_status', '=', 'pending')]"/>
+                <filter name="expense_in_validation" string="En validation"
+                        domain="[('validation_status', 'in', ['pending', 'waiting'])]"/>
+                <filter name="expense_rejected" string="Refusées au bon à payer"
+                        domain="[('validation_status', '=', 'rejected')]"/>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

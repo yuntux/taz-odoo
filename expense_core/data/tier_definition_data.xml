@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo noupdate="1">
+
+    <!-- Niveaux du bon à payer, livrés inactifs : les activer met le circuit en service.
+         Attention : base_tier_validation crée les revues par séquence DÉCROISSANTE, le niveau au numéro
+         le plus élevé est donc validé en premier (Office : 20, puis directeur de mission : 10). -->
+    <record id="tier_definition_bap_office" model="tier.definition">
+        <field name="name">Bon à payer : première validation (Office)</field>
+        <field name="model_id" ref="account.model_account_move"/>
+        <field name="review_type">group</field>
+        <field name="reviewer_group_id" ref="taz-common.taz-adv"/>
+        <field name="definition_domain">[('move_type', 'in', ['in_invoice'])]</field>
+        <field name="sequence">20</field>
+        <field name="approve_sequence" eval="True"/>
+        <field name="has_comment" eval="True"/>
+        <field name="comment_approve_default">Bon pour paiement</field>
+        <field name="notify_on_pending" eval="True"/>
+        <field name="notify_on_rejected" eval="True"/>
+        <field name="active" eval="False"/>
+    </record>
+
+    <!-- Une pièce sans projet (donc sans directeur de mission) n'a que la première validation. -->
+    <record id="tier_definition_bap_director" model="tier.definition">
+        <field name="name">Bon à payer : seconde validation (directeur de mission)</field>
+        <field name="model_id" ref="account.model_account_move"/>
+        <field name="review_type">field</field>
+        <field name="reviewer_field_id" ref="field_account_move__approval_director_ids"/>
+        <field name="definition_domain">[('move_type', 'in', ['in_invoice']), ('approval_director_ids', '!=', False)]</field>
+        <field name="sequence">10</field>
+        <field name="approve_sequence" eval="True"/>
+        <field name="has_comment" eval="True"/>
+        <field name="comment_approve_default">Bon pour paiement</field>
+        <field name="notify_on_pending" eval="True"/>
+        <field name="notify_on_rejected" eval="True"/>
+        <field name="active" eval="False"/>
+    </record>
+
+</odoo>

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo noupdate="1">
+
+    <!-- Remboursement hebdomadaire des reçus de salariés, livré inactif : l'activer une fois le journal Qonto créé. -->
+    <record id="ir_cron_reimbursement_order" model="ir.cron">
+        <field name="name">Dépenses : ordre de remboursement des salariés</field>
+        <field name="model_id" ref="account.model_account_move"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_create_reimbursement_order()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">weeks</field>
+        <field name="active" eval="False"/>
+    </record>
+
+    <!-- Lecture des justificatifs des reçus en brouillon, livrée inactive : l'activer une fois l'OCR configuré. -->
+    <record id="ir_cron_run_ocr" model="ir.cron">
+        <field name="name">Dépenses : lecture OCR des justificatifs</field>
+        <field name="model_id" ref="account.model_account_move"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_run_ocr()</field>
+        <field name="interval_number">10</field>
+        <field name="interval_type">minutes</field>
+        <field name="active" eval="False"/>
+    </record>
+
+</odoo>
