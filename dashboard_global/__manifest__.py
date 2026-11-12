@@ -16,7 +16,7 @@
     'category': 'Uncategorized',
     'version': "18.0.1.0.0",
 
-    'depends': ['board', 'taz-common', 'project_accounting', 'staffing'],
+    'depends': ['board', 'taz-common', 'project_accounting', 'staffing', 'expense_core'],
 
     'data': [
         "views/project_dashboard.xml",

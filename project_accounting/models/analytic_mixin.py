@@ -36,13 +36,15 @@ class AnalyticMixin(models.AbstractModel):
 
         for project_list_ids in old_rel_project_ids.values():
             for project in project_list_ids:
-                project.compute()
+                project.sudo().compute()
         return res
     
     def _compute_linked_projects(self):
         for rec in self:
             for project in rec.rel_project_ids:
-                project.compute()
+                # Recalcul des agrégats du projet : fait avec les droits système, car l'utilisateur qui modifie une
+                # ligne (un salarié sur son reçu) n'a pas à pouvoir écrire sur le projet.
+                project.sudo().compute()
 
 
     @api.depends('analytic_distribution')

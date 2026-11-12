@@ -30,6 +30,13 @@ class AccountMove(models.Model):
         string="Référence comptable de l'acheteur (BT-19)"
     )
 
+    einvoice_import_warning = fields.Text(
+        string="Alertes de l'import",
+        copy=False,
+        readonly=True,
+        help="Taxe introuvable ou écart de total détectés à l'import d'une facture reçue, affichés en bandeau.",
+    )
+
     def _prepare_en16931_dict(self, speedy, pdf_invoice_bin=False):
         vals = super()._prepare_en16931_dict(speedy, pdf_invoice_bin=pdf_invoice_bin)
         project_numbers = [n for n in self.rel_project_ids.mapped("number") if n]

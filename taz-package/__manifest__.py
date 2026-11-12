@@ -19,6 +19,7 @@
 		'dashboard_global',
 		'date_range',
 		'event_registration_light',
+		'expense_core',
 		'l10n_fr_siret',
 		'l10n_fr_siret_lookup',
 		'many2many_tags_link_sit',

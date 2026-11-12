@@ -30,13 +30,15 @@ class projectAccountingAccountMove(models.Model):
         old_rel_project_ids = self.rel_project_ids
         res = super().unlink()
         for project in old_rel_project_ids:
-            project.compute()
+            project.sudo().compute()
         return res
     
     def _compute_linked_projects(self):
         for rec in self:
             for project in rec.rel_project_ids:
-                project.compute()
+                # Recalcul des agrégats du projet : fait avec les droits système, car l'utilisateur qui modifie une
+                # ligne (un salarié sur son reçu) n'a pas à pouvoir écrire sur le projet.
+                project.sudo().compute()
 
     def action_post(self):
         if self.move_type in ['out_invoice', 'out_refund', 'out_receipt'] and not self.partner_id.external_auxiliary_code:

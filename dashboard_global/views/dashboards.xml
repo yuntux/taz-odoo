@@ -11,6 +11,7 @@
                             <action string="Mes projets en cours" name="%(project_accounting.project_action)d" context="{'search_default_own_projects':1, 'search_default_groupby_stage': 1}" domain="[('stage_id.state', '!=', 'closed')]"/>
                             <action string="Mes échéances de facturation du mois" name="%(project_accounting.action_sale_order_line_delivery_validation_month)d" context="{'search_default_my_sales_order_lines': 1, 'search_default_this_month' : 1, 'search_default_to_delivered_or_invoice' : 1}"/>
                             <action string="Factures impayées et en retard de mes missions" name="%(account.action_move_out_invoice_type)d" context="{'search_default_late' : 1, 'search_default_myinvoices' : 1}" domain="[('move_type', '=', 'out_invoice')]"/>
+                            <action string="Dépenses de mes projets à valider" name="%(expense_core.action_expense_to_validate)d" context="{'search_default_expense_to_validate_me': 1}" domain="[('move_type', 'in', ['in_invoice', 'in_receipt']), ('can_review', '=', True), ('validation_status', '=', 'pending')]"/>
                         </column>
                         <column>
                             <action string="Mes actions commerciales ouvertes avec une échéance sous 30 jours" name="%(taz-common.business_action_action)d" context="{'search_default_assigned_to_me' : 1, 'search_default_state_not_done_not_cancelled' : 1, 'search_default_j30' : 1}"/>

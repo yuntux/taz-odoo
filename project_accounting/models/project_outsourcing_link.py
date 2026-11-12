@@ -197,7 +197,7 @@ class projectOutsourcingLink(models.Model):
             else:
                 rec.display_name = f"{rec._name},{rec.id}"
 
-    partner_id = fields.Many2one('res.partner', domain="[('is_company', '=', True)]", string="Fournisseur", required=True)
+    partner_id = fields.Many2one('res.partner', domain="['|', ('is_company', '=', True), ('employee_ids', '!=', False)]", string="Fournisseur", required=True)
     project_id = fields.Many2one('project.project', string="Projet", required=True, check_company=True, default=_get_default_project_id, ondelete='restrict')
     link_type = fields.Selection(OUTSOURCING_LINK_TYPES, string="Type d'achat", required=True)
     company_id = fields.Many2one('res.company', string='Company', required=True, default=lambda self: self.env.company)
