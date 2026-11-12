@@ -1,8 +1,11 @@
 import json
 
-from odoo import Command, api, fields, models, _
-from odoo.exceptions import ValidationError
+import logging
 
+from odoo import Command, api, fields, models, _
+from odoo.exceptions import UserError, ValidationError
+
+_logger = logging.getLogger(__name__)
 APPROVAL_MOVE_TYPES = ('in_invoice',)
 # Une dépense avancée par un salarié ou payée par carte est une facture fournisseur (in_invoice), comme dans hr_expense
 # et comme le comprennent project_accounting et sage_connector ; expense_origin la distingue des factures de la PA.
@@ -224,19 +227,20 @@ class AccountMove(models.Model):
             move.invoice_line_ids.write({'analytic_distribution': distribution})
 
     def _ensure_expense_outsourcing_link(self, project):
-        """Déclare le salarié comme fournisseur du projet (type « Autres ») s'il ne l'est pas déjà.
+        """Déclare le tiers de la pièce comme fournisseur du projet (type « Autres ») s'il ne l'est pas déjà.
 
         project_accounting refuse toute écriture liée à un projet dont le tiers n'est ni le client ni un fournisseur
-        de l'onglet Achats. Le lien est créé avec les droits système, mais seulement pour un projet que le salarié a
-        le droit de choisir (staffé ou directeur de mission), ou pour l'Office : sinon la contrainte reste en vigueur.
+        de l'onglet Achats. Le lien est créé au choix du projet : pour un reçu, c'est le salarié remboursé ; pour une
+        dépense par carte, c'est le vrai fournisseur (le commerçant), pas le porteur de la carte. Il est créé avec les
+        droits système, mais seulement pour un projet que celui qui dépense a le droit de choisir (staffé ou
+        directeur de mission), ou pour l'Office : sinon la contrainte reste en vigueur.
         """
         self.ensure_one()
-        employee = self._get_expense_employee()
-        if not employee or not employee.work_contact_id:
+        partner = self._get_expense_link_partner()
+        if not partner:
             return
         if project not in self.allowed_project_ids and not self.env.user.has_group(OFFICE_GROUP):
             return
-        partner = employee.work_contact_id
         Link = self.env['project.outsourcing.link'].sudo()
         if not Link.search_count([('project_id', '=', project.id), ('partner_id', '=', partner.id)]):
             Link.create({
@@ -244,12 +248,31 @@ class AccountMove(models.Model):
                 'company_id': project.company_id.id or self.company_id.id,
             })
 
+    def _get_expense_link_partner(self):
+        """Tiers à déclarer comme fournisseur du projet : le contact du salarié (reçu) ou le commerçant (carte)."""
+        self.ensure_one()
+        if self.expense_origin == 'card':
+            return self.partner_id
+        employee = self._get_expense_employee()
+        return employee.work_contact_id if employee else self.env['res.partner']
+
+    def _get_expense_spender(self):
+        """Salarié qui dépense, dont le staffing limite les projets : l'employé remboursé (reçu) ou, pour une carte,
+        l'employé de l'utilisateur connecté (le porteur de la carte viendra de qonto.card au lot 3)."""
+        self.ensure_one()
+        if self.expense_origin == 'card':
+            return self.env['hr.employee'].sudo().search([
+                ('user_id', '=', self.env.uid), ('company_id', '=', self.company_id.id)], limit=1)
+        if self.expense_origin == 'employee_receipt':
+            return self._get_expense_employee()
+        return self.env['hr.employee']
+
     @api.depends('partner_id', 'invoice_date', 'date')
     def _compute_allowed_project_ids(self):
         Need = self.env['staffing.need'].sudo()
         Project = self.env['project.project'].sudo()
         for move in self:
-            employee = move._get_expense_employee() if move.expense_origin == 'employee_receipt' and move.id else False
+            employee = move._get_expense_spender() if move.id else False
             if not employee:
                 move.allowed_project_ids = False
                 continue
@@ -271,12 +294,12 @@ class AccountMove(models.Model):
         """
         if self.env.user.has_group(OFFICE_GROUP):
             return
-        for move in self.filtered(lambda m: m.expense_origin == 'employee_receipt' and m._get_expense_employee()):
+        for move in self.filtered(lambda m: m.expense_origin in EXPENSE_ORIGINS and m._get_expense_spender()):
             outside = move.line_ids.rel_project_ids - move.allowed_project_ids
             if outside:
                 raise ValidationError(_(
                     "%(employee)s n'est ni staffé le %(date)s ni directeur de mission sur : %(projects)s.",
-                    employee=move._get_expense_employee().name,
+                    employee=move._get_expense_spender().name,
                     date=move.invoice_date or move.date,
                     projects=', '.join(outside.mapped('display_name'))))
 
@@ -487,3 +510,64 @@ class AccountMove(models.Model):
         ], limit=limit, order='id desc')
         moves.action_run_ocr()
         return moves
+
+    # ------------------------------------------------------------------
+    # Rapprochement avec un bon de commande (comme le ferait l'Office)
+    # ------------------------------------------------------------------
+    def action_post(self):
+        res = super().action_post()
+        self.filtered(lambda m: m.expense_origin in EXPENSE_ORIGINS and m.state == 'posted')._reconcile_with_purchase_order()
+        return res
+
+    def _reconcile_with_purchase_order(self):
+        """À la comptabilisation, rapproche la dépense du bon de commande de son tiers sur le projet, en appelant le
+        wizard « Rapprochement BC » exactement comme l'Office le ferait à la main. Le tiers est celui de la pièce : le
+        salarié pour une note de frais, le vrai fournisseur (le commerçant) pour une dépense par carte.
+
+        - le BC du tiers pour le projet est unique et cumulatif : il reçoit une ligne par ligne de la dépense ;
+        - s'il n'existe pas, il est créé et confirmé ;
+        - l'enveloppe « frais divers » du projet est consommée si elle existe.
+
+        Une dépense sans projet, ou qui touche plusieurs projets, n'est pas rapprochée. Un échec du rapprochement ne
+        bloque jamais la comptabilisation : il est noté dans le chatter, l'Office reprend à la main.
+        """
+        Wizard = self.env['bill.po.reconcile.wizard'].sudo()
+        for move in self:
+            projects = move.line_ids.rel_project_ids
+            lines = move.invoice_line_ids.filtered(lambda l: l.display_type == 'product' and not l.purchase_line_id)
+            if len(projects) != 1 or not lines or not move.partner_id:
+                continue
+            try:
+                with self.env.cr.savepoint():
+                    wizard = Wizard.with_company(move.company_id).create(
+                        {'move_id': move.id, 'project_ids': [Command.set(projects.ids)]})
+                    wizard._onchange_project_ids()  # BC du salarié sur le projet, enveloppe présélectionnée
+                    if wizard.order_ids:
+                        wizard.append_order_id = wizard.order_ids.sorted('id')[:1]
+                    else:
+                        wizard.action_new_order()
+                    wizard.action_associate()
+                    move.invoice_line_ids.purchase_line_id.sudo().filtered(
+                        lambda pol: not pol.expense_move_id).write({'expense_move_id': move.id})
+            except (UserError, ValidationError) as error:
+                _logger.warning("Rapprochement BC impossible pour la dépense %s : %s", move.id, error)
+                move.message_post(body=_("Rapprochement avec un bon de commande impossible : %s", error))
+
+    def button_cancel(self):
+        res = super().button_cancel()
+        self._remove_expense_order_lines()
+        return res
+
+    def _remove_expense_order_lines(self):
+        """Retour arrière du rapprochement : les lignes de BC créées pour la dépense sont retirées, et le BC est annulé
+        s'il n'a plus de ligne. L'enveloppe consommée est déjà remise par le module du rapprochement."""
+        pols = self.env['purchase.order.line'].sudo().search([('expense_move_id', 'in', self.ids)])
+        if not pols:
+            return
+        orders = pols.order_id
+        # Les lignes de la dépense (annulée) perdent leur ligne de BC par la clé étrangère (ondelete « set null »).
+        pols.with_context(bill_po_reconcile_replace=True).unlink()
+        self.env.invalidate_all()
+        for order in orders:
+            if not order.order_line.filtered(lambda l: not l.display_type):
+                order.button_cancel()

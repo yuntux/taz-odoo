@@ -26,7 +26,7 @@ s'applique aux fournisseurs qui n'ont pas de mode de paiement préféré.
 
     'depends': [
         'account', 'hr', 'mail', 'base_tier_validation', 'taz-common', 'project_accounting', 'staffing',
-        'account_payment_batch_oca', 'account_payment_sepa_credit_transfer',
+        'account_payment_batch_oca', 'account_payment_sepa_credit_transfer', 'l10n_fr_einvoicing_extra',
     ],
 
     'data': [

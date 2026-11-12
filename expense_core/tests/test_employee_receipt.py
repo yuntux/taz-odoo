@@ -152,6 +152,28 @@ class TestEmployeeReceipt(TransactionCase):
         self.assertFalse(self.env['project.outsourcing.link'].search_count(
             [('project_id', '=', self.staffed.id), ('partner_id', '=', outsider.work_contact_id.id)]))
 
+    def test_card_expense_declares_the_real_merchant_as_supplier_of_the_project(self):
+        merchant = self.env['res.partner'].create({'name': 'Restaurant Le Bon Coin', 'is_company': True})
+        Link = self.env['project.outsourcing.link']
+        domain = [('project_id', '=', self.staffed.id), ('partner_id', '=', merchant.id)]
+        self.assertFalse(Link.search(domain))
+        card = self.env['account.move'].create({
+            'move_type': 'in_invoice', 'expense_origin': 'card', 'partner_id': merchant.id, 'invoice_date': '2026-11-10',
+            'invoice_line_ids': [Command.create({'name': 'Déjeuner', 'quantity': 1, 'price_unit': 45.0})]})
+        card.with_user(self.user).expense_project_id = self.staffed
+        self.assertEqual(Link.search(domain).link_type, 'other')
+        self.assertEqual(card.line_ids.rel_project_ids, self.staffed)
+        # Le salarié n'est pas déclaré à la place du commerçant, et un projet non staffé reste refusé.
+        self.assertFalse(Link.search_count([
+            ('project_id', '=', self.staffed.id), ('partner_id', '=', self.employee.work_contact_id.id),
+            ('create_uid', '=', self.user.id)]))
+        other_merchant = self.env['res.partner'].create({'name': 'Hôtel Lointain', 'is_company': True})
+        card2 = self.env['account.move'].create({
+            'move_type': 'in_invoice', 'expense_origin': 'card', 'partner_id': other_merchant.id, 'invoice_date': '2026-11-10',
+            'invoice_line_ids': [Command.create({'name': 'Nuit', 'quantity': 1, 'price_unit': 90.0})]})
+        with self.assertRaises(ValidationError):
+            card2.with_user(self.user).expense_project_id = self.other
+
     def test_the_director_of_a_project_may_charge_it_without_being_staffed(self):
         receipt = self._receipt()
         self.assertNotIn(self.other, receipt.allowed_project_ids)

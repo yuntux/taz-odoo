@@ -40,6 +40,13 @@ class BillPoReconcileWizard(models.TransientModel):
     allowed_order_ids = fields.Many2many("purchase.order", compute="_compute_allowed_order_ids")
     order_ids = fields.Many2many("purchase.order", string="BC sélectionné(s)")
     new_order = fields.Boolean("BC à créer")
+    append_order_id = fields.Many2one(
+        "purchase.order",
+        string="BC auquel ajouter les lignes",
+        help="Ajoute les lignes cochées de la facture à ce BC au lieu d'en créer un : pour les dépenses (notes de "
+        "frais, cartes) qui n'ont pas de BC prévu et s'accumulent sur le BC du salarié pour le projet. Technique : "
+        "posé par le rapprochement automatique des dépenses, jamais par l'écran.",
+    )
     allowed_envelope_line_ids = fields.Many2many(
         "purchase.order.line", compute="_compute_allowed_envelope_line_ids", string="Enveloppes disponibles"
     )
@@ -539,6 +546,14 @@ class BillPoReconcileWizard(models.TransientModel):
                 return "La devise de l'enveloppe diffère de celle de la facture."
         if not inv:
             return "Cochez au moins une ligne de la facture."
+        if self.append_order_id:
+            if pols:
+                return "Un ajout à un BC se traite seul : décochez les lignes de BC existantes."
+            if len(self.project_ids) != 1:
+                return "Un ajout à un BC se fait pour un seul projet."
+            if self.append_order_id.currency_id != self.move_id.currency_id:
+                return "La devise du BC diffère de celle de la facture."
+            return ""
         if self.new_order:
             if pols:
                 return "Un BC à créer se traite seul : décochez les lignes de BC existantes."
@@ -607,7 +622,9 @@ class BillPoReconcileWizard(models.TransientModel):
             raise UserError(msg)
         inv_amls = self.invoice_line_ids.filtered("selected").mapped("move_line_id")
         wpols = self.po_line_ids.filtered("selected")
-        if self.new_order and not wpols:
+        if self.append_order_id and not wpols:
+            touched = self._do_append_to_order(inv_amls)
+        elif self.new_order and not wpols:
             touched = self._do_create_order(inv_amls)
         elif all(wpols.mapped("is_mirror")):
             touched = self._do_attach_only(inv_amls, wpols)
@@ -710,23 +727,39 @@ class BillPoReconcileWizard(models.TransientModel):
         return order
 
     # -- cas 1 : création du BC ------------------------------------------------
-    def _do_create_order(self, amls):
-        move = self.move_id
-        project = self.project_ids
-        amls = amls.filtered("product_id")
-        if not amls:
-            raise UserError("Aucune ligne de facture avec un produit : impossible de créer le BC.")
-        # project_accounting exige que le fournisseur soit déclaré sur le projet (onglet Achats) :
-        # on crée le lien projet / fournisseur s'il n'existe pas encore, avec le type choisi dans le wizard.
+    def _ensure_supplier_link(self):
+        """project_accounting exige que le fournisseur soit déclaré sur le projet (onglet Achats) : on crée le lien
+        projet / fournisseur s'il n'existe pas encore, avec le type choisi dans le wizard."""
+        self.ensure_one()
+        move, project = self.move_id, self.project_ids
         link = self.env["project.outsourcing.link"]
         if not link.search_count([("project_id", "=", project.id), ("partner_id", "=", move.partner_id.id)]):
             link.create(
                 {"project_id": project.id, "partner_id": move.partner_id.id, "link_type": self.link_type or "other"}
             )
+
+    def _order_lines_vals(self, amls):
+        """Valeurs des lignes de BC recopiées depuis des lignes de facture ; sans distribution analytique sur la
+        ligne, c'est celle du projet. Commun à la création d'un BC et à l'ajout à un BC existant."""
+        amls = amls.filtered("product_id")
+        if not amls:
+            raise UserError("Aucune ligne de facture avec un produit : impossible de créer le BC.")
         vals_list = amls._prepare_line_values_for_purchase()
-        for vals in vals_list:
-            if not vals.get("analytic_distribution") and project.account_id:
-                vals["analytic_distribution"] = {str(project.account_id.id): 100}
+        for aml, vals in zip(amls, vals_list):
+            if not vals.get("analytic_distribution") and self.project_ids.account_id:
+                vals["analytic_distribution"] = {str(self.project_ids.account_id.id): 100}
+            # Les montants d'un BC sont hors taxe. Le standard recopie le prix de la ligne tel quel, ce qui est juste
+            # pour un prix hors taxe mais gonfle le BC de la TVA quand la taxe est incluse dans le prix (ticket de
+            # dépense lu en TTC) : le prix hors taxe de la ligne est alors repris.
+            if aml.quantity and any(tax.price_include for tax in aml.tax_ids):
+                vals["price_unit"] = aml.price_subtotal / aml.quantity
+                vals["discount"] = 0.0
+        return amls, vals_list
+
+    def _do_create_order(self, amls):
+        move = self.move_id
+        amls, vals_list = self._order_lines_vals(amls)
+        self._ensure_supplier_link()
         order = self.env["purchase.order"].create(
             {
                 "partner_id": move.partner_id.id,
@@ -735,6 +768,18 @@ class BillPoReconcileWizard(models.TransientModel):
         )
         order.button_confirm()
         for aml, pol in zip(amls, order.order_line):
+            aml.purchase_line_id = pol.id
+        return order
+
+    # -- cas 1 bis : ajout à un BC existant (dépenses) --------------------------
+    def _do_append_to_order(self, amls):
+        """Ajoute une ligne de BC par ligne de facture au BC choisi, puis rattache chaque ligne de facture à la
+        sienne. Le BC n'est ni recréé ni reconfirmé : ses lignes existantes ne changent pas."""
+        order = self.append_order_id
+        amls, vals_list = self._order_lines_vals(amls)
+        self._ensure_supplier_link()
+        pols = self.env["purchase.order.line"].create([dict(vals, order_id=order.id) for vals in vals_list])
+        for aml, pol in zip(amls, pols):
             aml.purchase_line_id = pol.id
         return order
 
