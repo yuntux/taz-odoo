@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo noupdate="1">
+    <!-- Filet du webhook : relit les transactions par carte récentes. Livrée inactive : l'activer une fois l'API configurée. -->
+    <record id="ir_cron_qonto_import" model="ir.cron">
+        <field name="name">Dépenses : lecture des transactions par carte Qonto</field>
+        <field name="model_id" ref="account.model_account_move"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_qonto_import()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">hours</field>
+        <field name="active" eval="False"/>
+    </record>
+</odoo>

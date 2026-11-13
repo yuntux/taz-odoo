@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo>
+    <record id="res_config_settings_view_form_expense_qonto" model="ir.ui.view">
+        <field name="name">res.config.settings.form.expense.qonto</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="account.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//block[@id='expense_ocr_block']" position="after">
+                <block title="Cartes Qonto" id="expense_qonto_block" groups="base.group_system">
+                    <setting id="expense_qonto" string="API et webhook Qonto"
+                             help="Identifiant et clé secrète de l'API (Intégrations et partenariats > Clés API), secret du webhook. Les clés ne sont lisibles que des administrateurs.">
+                        <div class="content-group">
+                            <div class="row mt8"><label for="statement_import_api_login" class="col-lg-4"/><field name="statement_import_api_login"/></div>
+                            <div class="row"><label for="statement_import_api_password" class="col-lg-4"/><field name="statement_import_api_password" password="True"/></div>
+                            <div class="row"><label for="qonto_webhook_secret" class="col-lg-4"/><field name="qonto_webhook_secret" password="True"/></div>
+                            <div class="row"><label for="qonto_default_partner_id" class="col-lg-4"/><field name="qonto_default_partner_id"/></div>
+                        </div>
+                    </setting>
+                </block>
+            </xpath>
+        </field>
+    </record>
+</odoo>
