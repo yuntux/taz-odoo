@@ -53,3 +53,22 @@ class TestExpenseAlerts(TransactionCase):
         after = self._receipt(10.0)
         after._expense_send_alerts()
         self.assertFalse(self._alerts(after, 'Cumul'), "pas de nouvelle alerte une fois le seuil déjà franchi")
+
+
+@tagged('post_install', '-at_install')
+class TestNotificationPreference(TransactionCase):
+
+    def _user(self, login, **extra):
+        vals = {'name': login, 'login': login, 'email': login + '@example.com'}
+        vals.update(extra)
+        return self.env['res.users'].with_context(no_reset_password=True).create(vals)
+
+    def test_new_internal_user_gets_notifications_in_odoo_for_push(self):
+        self.assertEqual(self._user('push_default').notification_type, 'inbox')
+
+    def test_explicit_choice_is_respected(self):
+        self.assertEqual(self._user('push_email', notification_type='email').notification_type, 'email')
+
+    def test_portal_user_stays_on_email(self):
+        user = self._user('push_portal', groups_id=[Command.set([self.env.ref('base.group_portal').id])])
+        self.assertEqual(user.notification_type, 'email')
