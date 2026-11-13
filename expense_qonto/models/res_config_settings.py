@@ -12,3 +12,15 @@ class ResConfigSettings(models.TransientModel):
                                        groups='base.group_system')
     qonto_default_partner_id = fields.Many2one(related='company_id.qonto_default_partner_id', readonly=False)
     qonto_reminder_days = fields.Integer(related='company_id.qonto_reminder_days', readonly=False)
+    qonto_webhook_subscription_id = fields.Char(related='company_id.qonto_webhook_subscription_id',
+                                                groups='base.group_system')
+
+    def action_qonto_register_webhook(self):
+        self.ensure_one()
+        self.company_id.action_qonto_register_webhook()
+        return {'type': 'ir.actions.client', 'tag': 'reload'}
+
+    def action_qonto_unregister_webhook(self):
+        self.ensure_one()
+        self.company_id.action_qonto_unregister_webhook()
+        return {'type': 'ir.actions.client', 'tag': 'reload'}

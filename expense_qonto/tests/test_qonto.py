@@ -1,9 +1,10 @@
 import hashlib
 import hmac
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from odoo import Command
+from odoo.exceptions import UserError
 from odoo.tests.common import HttpCase, TransactionCase, tagged
 
 from ..controllers.main import QontoWebhook
@@ -182,3 +183,78 @@ class TestQontoWebhook(HttpCase):
         self.assertEqual(self._post({'data': _tx()}).status_code, 200)
         self.assertEqual(self._post({'data': _tx()}).status_code, 200)
         self.assertEqual(self.env['account.move'].search_count([('qonto_transaction_id', '=', 'tx-1')]), 1)
+
+
+@tagged('post_install', '-at_install')
+class TestQontoWebhookRegistration(TransactionCase):
+
+    def setUp(self):
+        super().setUp()
+        self.company = self.env.company
+        self.company.write({'statement_import_api_login': 'org-slug', 'statement_import_api_password': 'key',
+                            'qonto_webhook_secret': False, 'qonto_webhook_subscription_id': False})
+        self.env['ir.config_parameter'].sudo().set_param('web.base.url', 'https://odoo.example.com')
+
+    def _response(self, status, body=None):
+        response = MagicMock(status_code=status, text='')
+        response.content = b'{}' if body is not None else b''
+        response.json.return_value = body or {}
+        return response
+
+    def test_register_sends_the_callback_and_keeps_our_secret_and_the_subscription(self):
+        with patch('odoo.addons.expense_qonto.models.qonto_api.requests.request',
+                   return_value=self._response(201, {'id': 'sub-1'})) as request:
+            self.company.action_qonto_register_webhook()
+        args, kwargs = request.call_args
+        self.assertEqual(args[0], 'POST')
+        self.assertTrue(args[1].endswith('/v2/webhook_subscriptions'))
+        self.assertEqual(kwargs['json']['callback_url'], 'https://odoo.example.com/expense_qonto/webhook')
+        self.assertEqual(kwargs['json']['types'], ['v1/transactions'])
+        self.assertEqual(kwargs['headers']['Authorization'], 'org-slug:key')
+        self.assertEqual(self.company.qonto_webhook_secret, kwargs['json']['secret'])
+        self.assertTrue(32 <= len(kwargs['json']['secret']) <= 128)
+        self.assertEqual(self.company.qonto_webhook_subscription_id, 'sub-1')
+
+    def test_register_refuses_http_and_a_second_subscription(self):
+        self.env['ir.config_parameter'].sudo().set_param('web.base.url', 'http://odoo.example.com')
+        with self.assertRaises(UserError):
+            self.company.action_qonto_register_webhook()
+        self.env['ir.config_parameter'].sudo().set_param('web.base.url', 'https://odoo.example.com')
+        self.company.qonto_webhook_subscription_id = 'sub-1'
+        with self.assertRaises(UserError):
+            self.company.action_qonto_register_webhook()
+
+    def test_qonto_error_is_reported_and_nothing_is_kept(self):
+        with patch('odoo.addons.expense_qonto.models.qonto_api.requests.request', return_value=self._response(401, {})):
+            with self.assertRaises(UserError):
+                self.company.action_qonto_register_webhook()
+        self.assertFalse(self.company.qonto_webhook_subscription_id)
+        self.assertFalse(self.company.qonto_webhook_secret)
+
+    def test_unregister_deletes_the_subscription_and_clears_the_secret(self):
+        self.company.write({'qonto_webhook_subscription_id': 'sub-1', 'qonto_webhook_secret': 'x' * 40})
+        with patch('odoo.addons.expense_qonto.models.qonto_api.requests.request',
+                   return_value=self._response(204)) as request:
+            self.company.action_qonto_unregister_webhook()
+        self.assertEqual(request.call_args[0][0], 'DELETE')
+        self.assertTrue(request.call_args[0][1].endswith('/v2/webhook_subscriptions/sub-1'))
+        self.assertFalse(self.company.qonto_webhook_subscription_id)
+        self.assertFalse(self.company.qonto_webhook_secret)
+
+    def test_settings_buttons_call_the_company_and_reload(self):
+        settings = self.env['res.config.settings'].create({})
+        with patch('odoo.addons.expense_qonto.models.qonto_api.requests.request',
+                   return_value=self._response(201, {'id': 'sub-2'})):
+            action = settings.action_qonto_register_webhook()
+        self.assertEqual(action['tag'], 'reload')
+        self.assertEqual(self.company.qonto_webhook_subscription_id, 'sub-2')
+
+    def test_sandbox_url_and_staging_token_come_from_system_parameters(self):
+        params = self.env['ir.config_parameter'].sudo()
+        params.set_param('expense_qonto.base_url', 'https://thirdparty-sandbox.staging.qonto.co/v2/')
+        params.set_param('expense_qonto.staging_token', 'tok')
+        with patch('odoo.addons.expense_qonto.models.qonto_api.requests.request',
+                   return_value=self._response(201, {'id': 'sub-3'})) as request:
+            self.company.action_qonto_register_webhook()
+        self.assertEqual(request.call_args[0][1], 'https://thirdparty-sandbox.staging.qonto.co/v2/webhook_subscriptions')
+        self.assertEqual(request.call_args[1]['headers']['X-Qonto-Staging-Token'], 'tok')

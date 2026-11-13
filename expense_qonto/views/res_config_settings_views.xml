@@ -14,6 +14,16 @@
                             <div class="row"><label for="statement_import_api_password" class="col-lg-4"/><field name="statement_import_api_password" password="True"/></div>
                             <div class="row"><label for="qonto_webhook_secret" class="col-lg-4"/><field name="qonto_webhook_secret" password="True"/></div>
                             <div class="row"><label for="qonto_default_partner_id" class="col-lg-4"/><field name="qonto_default_partner_id"/></div>
+                            <div class="row mt8" invisible="qonto_webhook_subscription_id">
+                                <div class="col-lg-4"/>
+                                <div class="col"><button name="action_qonto_register_webhook" type="object" class="btn-primary"
+                                        string="Inscrire le webhook" confirm="Inscrire chez Qonto l'adresse de ce serveur pour recevoir les transactions par carte ?"/></div>
+                            </div>
+                            <div class="row mt8" invisible="not qonto_webhook_subscription_id">
+                                <label for="qonto_webhook_subscription_id" class="col-lg-4"/><field name="qonto_webhook_subscription_id"/>
+                                <button name="action_qonto_unregister_webhook" type="object" string="Supprimer le webhook"
+                                        confirm="Supprimer l'abonnement chez Qonto ? Les transactions ne seront plus reçues que par la lecture planifiée."/>
+                            </div>
                             <div class="row"><label for="qonto_reminder_days" class="col-lg-4"/><field name="qonto_reminder_days"/></div>
                         </div>
                     </setting>
