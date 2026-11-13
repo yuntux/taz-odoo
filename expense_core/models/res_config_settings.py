@@ -12,6 +12,12 @@ class ResConfigSettings(models.TransientModel):
         related='company_id.expense_reimbursement_method_line_id', readonly=False,
     )
 
+    expense_alert_amount = fields.Monetary(related='company_id.expense_alert_amount', readonly=False,
+                                           currency_field='currency_id')
+    expense_cumul_amount = fields.Monetary(related='company_id.expense_cumul_amount', readonly=False,
+                                           currency_field='currency_id')
+    expense_cumul_days = fields.Integer(related='company_id.expense_cumul_days', readonly=False)
+
     # Service OCR : réglage commun à toutes les sociétés, stocké en paramètres système (réservés aux
     # administrateurs, y compris la clé d'API).
     expense_ocr_provider = fields.Selection(

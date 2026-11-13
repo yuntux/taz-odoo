@@ -17,6 +17,16 @@
                 </setting>
             </xpath>
             <xpath expr="//block[@id='print_vendor_checks_setting_container']" position="after">
+                <block title="Alertes sur les dépenses" id="expense_alert_block">
+                    <setting id="expense_alerts" string="Seuils d'alerte"
+                             help="Une dépense au-dessus du seuil, ou un cumul par personne au-dessus du sien, est signalé par e-mail.">
+                        <div class="content-group">
+                            <div class="row mt8"><label for="expense_alert_amount" class="col-lg-4"/><field name="expense_alert_amount"/></div>
+                            <div class="row"><label for="expense_cumul_amount" class="col-lg-4"/><field name="expense_cumul_amount"/></div>
+                            <div class="row"><label for="expense_cumul_days" class="col-lg-4"/><field name="expense_cumul_days"/></div>
+                        </div>
+                    </setting>
+                </block>
                 <block title="Lecture des justificatifs (OCR)" id="expense_ocr_block" groups="base.group_system">
                     <setting id="expense_ocr" string="Service de lecture des tickets et factures"
                              help="Renseigner l'adresse et la clé de la ressource Azure Document Intelligence. La clé n'est lisible que des administrateurs.">

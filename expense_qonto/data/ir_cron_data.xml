@@ -10,4 +10,15 @@
         <field name="interval_type">hours</field>
         <field name="active" eval="False"/>
     </record>
+
+    <!-- Relances des justificatifs manquants, livrée inactive. -->
+    <record id="ir_cron_qonto_reminders" model="ir.cron">
+        <field name="name">Dépenses : relance des justificatifs de carte manquants</field>
+        <field name="model_id" ref="account.model_account_move"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_qonto_reminders()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="active" eval="False"/>
+    </record>
 </odoo>

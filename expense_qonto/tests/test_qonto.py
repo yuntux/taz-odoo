@@ -54,7 +54,7 @@ class TestQontoExpense(TransactionCase):
         self.assertEqual(self.Move.search_count([('qonto_transaction_id', '=', 'tx-1')]), 1)
 
     def test_pending_declined_credit_and_non_card_transactions_are_ignored(self):
-        for extra in ({'status': 'pending'}, {'status': 'declined'}, {'side': 'credit'},
+        for extra in ({'status': 'pending'}, {'status': 'declined'}, {'side': 'other'},
                       {'operation_type': 'transfer'}, {'card_id': None}):
             self.assertFalse(self._create(**extra), extra)
 
@@ -92,6 +92,52 @@ class TestQontoExpense(TransactionCase):
         self.assertEqual(move.payment_state, 'in_payment')
         payment = self.env['account.payment'].search([('journal_id', '=', self.journal.id)])
         self.assertEqual((len(payment), payment.amount, str(payment.date)), (1, 38.4, '2026-11-10'))
+
+    def test_credit_transaction_creates_a_refund_paid_inbound(self):
+        refund = self._create(id='tx-r', transaction_id='tx-r', side='credit', amount=12.5)
+        self.assertEqual((refund.move_type, refund.amount_total), ('in_refund', 12.5))
+        refund.invoice_line_ids.tax_ids = False
+        refund.action_post()
+        self.assertEqual(refund.state, 'posted')
+        self.assertEqual(refund.payment_state, 'in_payment')
+        self.assertFalse(refund.activity_ids)
+
+    def test_holder_is_notified_by_the_odoo_bot(self):
+        user = self.env['res.users'].with_context(no_reset_password=True).create(
+            {'name': 'Porteur N', 'login': 'porteur_notif', 'email': 'pn@example.com'})
+        self.employee.user_id = user
+        self.env['account.bank.statement.card'].create({
+            'code': '4242', 'qonto_card_id': 'card-uuid-1', 'journal_id': self.journal.id, 'employee_id': self.employee.id})
+        move = self._create()
+        message = self.env['mail.message'].search([('model', '=', 'account.move'), ('res_id', '=', move.id),
+                                                   ('subject', 'ilike', 'à compléter')])
+        self.assertEqual(message.partner_ids, user.partner_id)
+        self.assertEqual(message.author_id, self.env.ref('base.partner_root'))
+
+    def test_reminders_go_to_the_holder_then_to_the_management_and_stop(self):
+        user = self.env['res.users'].with_context(no_reset_password=True).create(
+            {'name': 'Porteur R', 'login': 'porteur_rem', 'email': 'pr@example.com'})
+        boss = self.env['res.users'].with_context(no_reset_password=True).create(
+            {'name': 'Direction R', 'login': 'boss_rem', 'email': 'br@example.com',
+             'groups_id': [Command.set([self.env.ref('base.group_user').id, self.env.ref('taz-common.taz-management').id])]})
+        self.employee.user_id = user
+        self.env['account.bank.statement.card'].create({
+            'code': '4242', 'qonto_card_id': 'card-uuid-1', 'journal_id': self.journal.id, 'employee_id': self.employee.id})
+        move = self._create(settled_at='2026-01-01T09:00:00.000Z')
+        subject = lambda s: self.env['mail.message'].search([('res_id', '=', move.id), ('subject', 'ilike', s)])
+        self.assertEqual(self.Move._cron_qonto_reminders(), move)
+        self.assertEqual(subject('Justificatif manquant').partner_ids, user.partner_id)
+        self.assertFalse(self.Move._cron_qonto_reminders(), "pas de seconde relance avant le délai")
+        move.qonto_reminder_date = '2026-01-10'
+        self.assertEqual(self.Move._cron_qonto_reminders(), move)
+        self.assertIn(boss.partner_id, subject('à relancer').partner_ids)
+        move.qonto_reminder_date = '2026-01-20'
+        self.assertFalse(self.Move._cron_qonto_reminders(), "au plus deux relances")
+
+    def test_no_reminder_when_a_receipt_is_attached(self):
+        move = self._create(settled_at='2026-01-01T09:00:00.000Z')
+        self.env['ir.attachment'].create({'name': 'ticket.txt', 'res_model': 'account.move', 'res_id': move.id, 'raw': b'x'})
+        self.assertFalse(self.Move._cron_qonto_reminders())
 
     def test_cron_reads_recent_card_transactions_once(self):
         with patch.object(type(self.env['qonto.api']), 'list_transactions',

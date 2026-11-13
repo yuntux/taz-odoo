@@ -20,3 +20,14 @@ class ResCompany(models.Model):
              "Qonto) appliqué aux reçus de salariés à rembourser. La tâche hebdomadaire les ajoute à un ordre "
              "de paiement en brouillon que la trésorerie lance.",
     )
+
+    expense_alert_amount = fields.Monetary(
+        string="Seuil d'alerte par dépense", default=500.0, currency_field='currency_id',
+        help="Une dépense envoyée en validation au-dessus de ce montant est signalée par e-mail au directeur de "
+             "mission, ou à la direction si la pièce n'a pas de projet.")
+    expense_cumul_amount = fields.Monetary(
+        string="Seuil de cumul par personne", default=1500.0, currency_field='currency_id',
+        help="Alerte quand le cumul des dépenses d'une personne dépasse ce montant sur la durée ci-dessous ; "
+             "le message va à son manager, ou à la direction.")
+    expense_cumul_days = fields.Integer(
+        string="Durée du cumul (jours)", default=30, help="Fenêtre glissante du cumul par personne.")

@@ -320,7 +320,51 @@ class AccountMove(models.Model):
     def request_validation(self):
         self._check_expense_staffing()
         self._check_expense_lines()
-        return super().request_validation()
+        res = super().request_validation()
+        self._expense_send_alerts()
+        return res
+
+    # ------------------------------------------------------------------
+    # Alertes de seuil (envoyées à la demande de validation)
+    # ------------------------------------------------------------------
+    def _expense_management_partners(self):
+        group = self.env.ref('taz-common.taz-management', raise_if_not_found=False)
+        return group.sudo().users.filtered(lambda u: u.company_ids & self.company_id).partner_id if group else self.env['res.partner']
+
+    def _expense_notify(self, partners, subject, body):
+        """Message adressé (e-mail ou notification selon les préférences), posté par le robot Odoo."""
+        self.ensure_one()
+        if partners:
+            self.message_notify(partner_ids=partners.ids, subject=subject, body=body,
+                                author_id=self.env.ref('base.partner_root').id)
+
+    def _expense_send_alerts(self):
+        """Dépense au-dessus du seuil : e-mail au DM, ou à la direction ; cumul d'une personne au-dessus du sien :
+        e-mail à son manager, ou à la direction (une seule fois, au moment où le seuil est franchi)."""
+        for move in self.filtered(lambda m: m.move_type == 'in_invoice' and m.expense_origin in EXPENSE_ORIGINS):
+            company = move.company_id
+            if company.expense_alert_amount and move.amount_total > company.expense_alert_amount:
+                partners = move.approval_director_ids.partner_id or move._expense_management_partners()
+                move._expense_notify(
+                    partners, _("Dépense de %(amount).2f %(currency)s à valider", amount=move.amount_total, currency=move.currency_id.name),
+                    _("La dépense %(move)s dépasse le seuil d'alerte de %(threshold).2f %(currency)s.",
+                      move=move.display_name, threshold=company.expense_alert_amount, currency=company.currency_id.name))
+            spender = move._get_expense_spender()
+            if not (spender and company.expense_cumul_amount and company.expense_cumul_days):
+                continue
+            since = fields.Date.subtract(fields.Date.context_today(move), days=company.expense_cumul_days)
+            moves = self.sudo().search([
+                ('company_id', '=', company.id), ('move_type', '=', 'in_invoice'),
+                ('expense_origin', 'in', list(EXPENSE_ORIGINS)), ('state', '!=', 'cancel'),
+                ('invoice_date', '>=', since)]).filtered(lambda m: m._get_expense_spender() == spender)
+            total = sum(moves.mapped('amount_total'))
+            if total > company.expense_cumul_amount >= total - move.amount_total:
+                partners = spender.parent_id.user_id.partner_id or move._expense_management_partners()
+                move._expense_notify(
+                    partners, _("Cumul de dépenses de %s", spender.name),
+                    _("Les dépenses de %(employee)s atteignent %(total).2f %(currency)s sur %(days)s jours glissants "
+                      "(seuil : %(threshold).2f).", employee=spender.name, total=total, currency=company.currency_id.name,
+                      days=company.expense_cumul_days, threshold=company.expense_cumul_amount))
 
     @api.model
     def _cron_create_reimbursement_order(self):
@@ -516,7 +560,7 @@ class AccountMove(models.Model):
     # ------------------------------------------------------------------
     def action_post(self):
         res = super().action_post()
-        self.filtered(lambda m: m.expense_origin in EXPENSE_ORIGINS and m.state == 'posted')._reconcile_with_purchase_order()
+        self.filtered(lambda m: m.move_type == 'in_invoice' and m.expense_origin in EXPENSE_ORIGINS and m.state == 'posted')._reconcile_with_purchase_order()
         return res
 
     def _reconcile_with_purchase_order(self):

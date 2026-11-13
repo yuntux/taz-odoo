@@ -17,3 +17,7 @@ class ResCompany(models.Model):
         'res.partner', string="Tiers des dépenses par carte",
         help="Tiers de la dépense quand aucune fiche de fournisseur ne porte le nom du commerçant. "
              "Le commerçant reste visible dans le libellé de la ligne.")
+    qonto_reminder_days = fields.Integer(
+        string="Délai de relance des justificatifs (jours)", default=3,
+        help="Une dépense par carte sans justificatif depuis ce délai est rappelée au porteur ; après le même délai "
+             "encore, au directeur de mission (ou à la direction).")

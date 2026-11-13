@@ -14,6 +14,7 @@
                             <div class="row"><label for="statement_import_api_password" class="col-lg-4"/><field name="statement_import_api_password" password="True"/></div>
                             <div class="row"><label for="qonto_webhook_secret" class="col-lg-4"/><field name="qonto_webhook_secret" password="True"/></div>
                             <div class="row"><label for="qonto_default_partner_id" class="col-lg-4"/><field name="qonto_default_partner_id"/></div>
+                            <div class="row"><label for="qonto_reminder_days" class="col-lg-4"/><field name="qonto_reminder_days"/></div>
                         </div>
                     </setting>
                 </block>
