@@ -26,4 +26,8 @@ class ResConfigSettings(models.TransientModel):
         help="Clé d'API du service OCR, lisible des seuls administrateurs système.")
     expense_ocr_model = fields.Char(
         string="Modèle OCR", config_parameter='expense_core.ocr_model', default='prebuilt-receipt',
-        help="Pour Azure : prebuilt-receipt (tickets), prebuilt-invoice (factures).")
+        help="Modèle Azure des tickets et reçus (prebuilt-receipt).")
+    expense_ocr_invoice_model = fields.Char(
+        string="Modèle OCR des factures", config_parameter='expense_core.ocr_invoice_model',
+        default='prebuilt-invoice',
+        help="Modèle Azure des factures de fournisseurs reçues en PDF sans XML (prebuilt-invoice).")

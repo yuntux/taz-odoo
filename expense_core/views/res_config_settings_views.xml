@@ -25,6 +25,7 @@
                             <div class="row mt8"><label for="expense_ocr_endpoint" class="col-lg-4"/><field name="expense_ocr_endpoint"/></div>
                             <div class="row"><label for="expense_ocr_api_key" class="col-lg-4"/><field name="expense_ocr_api_key" password="True"/></div>
                             <div class="row"><label for="expense_ocr_model" class="col-lg-4"/><field name="expense_ocr_model"/></div>
+                            <div class="row"><label for="expense_ocr_invoice_model" class="col-lg-4"/><field name="expense_ocr_invoice_model"/></div>
                         </div>
                     </setting>
                 </block>

@@ -42,21 +42,27 @@ class ExpenseOcr(models.AbstractModel):
     def is_configured(self):
         return bool(self._get_param('provider'))
 
-    def analyze(self, content, mimetype):
+    def analyze(self, content, mimetype, kind='receipt'):
+        """kind='receipt' : ticket ou reçu (modèle de reçus) ; kind='invoice' : facture de fournisseur (modèle de
+        factures, résultat au format de analyze_invoice)."""
         provider = self._get_param('provider')
         if not provider:
             raise UserError(_("Aucun service OCR n'est configuré (Paramètres > Comptabilité)."))
-        return getattr(self, f'_analyze_{provider}')(content, mimetype)
+        method = getattr(self, f'_analyze_{provider}')
+        return method(content, mimetype) if kind == 'receipt' else method(content, mimetype, kind=kind)
 
     # ------------------------------------------------------------------
     # Azure Document Intelligence
     # ------------------------------------------------------------------
-    def _analyze_azure(self, content, mimetype):
+    def _analyze_azure(self, content, mimetype, kind='receipt'):
         endpoint = self._get_param('endpoint').rstrip('/')
         key = self._get_param('api_key')
         if not endpoint or not key:
             raise UserError(_("L'adresse et la clé du service OCR doivent être renseignées."))
-        model = self._get_param('model') or 'prebuilt-receipt'
+        if kind == 'invoice':
+            model = self._get_param('invoice_model') or 'prebuilt-invoice'
+        else:
+            model = self._get_param('model') or 'prebuilt-receipt'
         headers = {'Ocp-Apim-Subscription-Key': key}
         url = f'{endpoint}/documentintelligence/documentModels/{model}:analyze'
         response = requests.post(
@@ -74,7 +80,7 @@ class ExpenseOcr(models.AbstractModel):
             data = result.json()
             status = data.get('status')
             if status == 'succeeded':
-                return self._normalize_azure(data)
+                return self._normalize_azure_invoice(data) if kind == 'invoice' else self._normalize_azure(data)
             if status == 'failed':
                 raise UserError(_("Le service OCR n'a pas pu lire le document."))
             time.sleep(AZURE_POLL_DELAY)
@@ -135,4 +141,79 @@ class ExpenseOcr(models.AbstractModel):
             'lines': lines,
             'tax_details': tax_details,
             'confidence': min(confidences) if confidences else 0.0,
+        }
+
+    @classmethod
+    def _normalize_azure_invoice(cls, data):
+        """Résultat du modèle de factures d'Azure (prebuilt-invoice), indépendant du fournisseur d'OCR :
+
+            {'vendor': str, 'vendor_vat': str, 'invoice_number': str, 'date': date | None, 'due_date': date | None,
+             'total': float | None, 'untaxed': float | None, 'tax_total': float | None, 'currency': str | None,
+             'iban': str, 'bic': str,
+             'address': {'street': str, 'city': str, 'zip': str, 'country_code': str},
+             'lines': [{'name': str, 'qty': float, 'price_unit': float | None, 'amount': float | None,
+                        'tax_rate': float | None}],
+             'tax_details': [{'rate': float | None, 'net': float | None, 'tax': float | None}]}
+        """
+        documents = (data.get('analyzeResult') or {}).get('documents') or []
+        fields = documents[0].get('fields', {}) if documents else {}
+        if not fields:
+            raise UserError(_("Aucune information n'a été lue sur le document."))
+
+        def text(name, source=None):
+            field = (source if source is not None else fields).get(name) or {}
+            return (field.get('valueString') or field.get('content') or '').strip()
+
+        def money(field):
+            value = (field or {}).get('valueCurrency') or {}
+            return value.get('amount'), value.get('currencyCode')
+
+        def day(name):
+            value = (fields.get(name) or {}).get('valueDate')
+            return date.fromisoformat(value) if value else None
+
+        total, currency = money(fields.get('InvoiceTotal'))
+        untaxed, untaxed_currency = money(fields.get('SubTotal'))
+        tax_total, _tax_currency = money(fields.get('TotalTax'))
+        address = (fields.get('VendorAddress') or {}).get('valueAddress') or {}
+        iban = bic = ''
+        for payment in (fields.get('PaymentDetails') or {}).get('valueArray', []):
+            props = payment.get('valueObject', {})
+            iban = iban or text('IBAN', props).replace(' ', '')
+            bic = bic or text('SWIFT', props).replace(' ', '')
+        lines = []
+        for item in (fields.get('Items') or {}).get('valueArray', []):
+            props = item.get('valueObject', {})
+            amount, _line_currency = money(props.get('Amount'))
+            unit_price, _unit_currency = money(props.get('UnitPrice'))
+            name = text('Description', props)
+            if name or amount is not None:
+                lines.append({
+                    'name': name,
+                    'qty': (props.get('Quantity') or {}).get('valueNumber') or 1.0,
+                    'price_unit': unit_price, 'amount': amount,
+                    'tax_rate': cls._parse_rate(props.get('TaxRate')),
+                })
+        tax_details = []
+        for detail in (fields.get('TaxDetails') or {}).get('valueArray', []):
+            props = detail.get('valueObject', {})
+            tax_details.append({
+                'rate': cls._parse_rate(props.get('Rate')),
+                'net': money(props.get('NetAmount'))[0],
+                'tax': money(props.get('Amount'))[0],
+            })
+        return {
+            'vendor': text('VendorName'),
+            'vendor_vat': text('VendorTaxId').replace(' ', ''),
+            'invoice_number': text('InvoiceId'),
+            'date': day('InvoiceDate'),
+            'due_date': day('DueDate'),
+            'total': total, 'untaxed': untaxed, 'tax_total': tax_total,
+            'currency': currency or untaxed_currency,
+            'iban': iban, 'bic': bic,
+            'address': {
+                'street': address.get('streetAddress') or '', 'city': address.get('city') or '',
+                'zip': address.get('postalCode') or '', 'country_code': address.get('countryRegion') or ''},
+            'lines': lines,
+            'tax_details': tax_details,
         }

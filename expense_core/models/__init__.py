@@ -1,3 +1,4 @@
+from . import account_invoice_import
 from . import account_move
 from . import expense_ocr
 from . import product_template
