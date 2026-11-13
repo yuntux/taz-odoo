@@ -20,7 +20,7 @@
                     </div>
                 </t>
             </div>
-            <div class="o_bill_po_col flex-grow-1" t-if="!wizard.data.new_order">
+            <div class="o_bill_po_col flex-grow-1" t-if="!wizard.data.new_order and !wizard.data.append_order_id">
                 <h6 class="text-uppercase text-muted">Lignes des BC</h6>
                 <t t-foreach="groups" t-as="group" t-key="group.key">
                     <div t-attf-class="o_bill_po_group o_bill_po_color_{{group.color}}">
@@ -58,7 +58,7 @@
         </div>
         <div class="o_bill_po_totals d-flex gap-4 mt-2">
             <span>Facture : <strong class="o_bill_po_invoice_total" t-esc="money(invoiceTotal)"/></span>
-            <span t-if="!wizard.data.new_order">BC : <strong class="o_bill_po_po_total" t-esc="money(poTotal)"/></span>
+            <span t-if="!wizard.data.new_order and !wizard.data.append_order_id">BC : <strong class="o_bill_po_po_total" t-esc="money(poTotal)"/></span>
         </div>
     </t>
 </templates>

@@ -43,9 +43,9 @@ class BillPoReconcileWizard(models.TransientModel):
     append_order_id = fields.Many2one(
         "purchase.order",
         string="BC auquel ajouter les lignes",
-        help="Ajoute les lignes cochées de la facture à ce BC au lieu d'en créer un : pour les dépenses (notes de "
-        "frais, cartes) qui n'ont pas de BC prévu et s'accumulent sur le BC du salarié pour le projet. Technique : "
-        "posé par le rapprochement automatique des dépenses, jamais par l'écran.",
+        help="Ajoute les lignes cochées de la facture à ce BC au lieu d'en créer un : pour les factures qui n'ont "
+        "pas de BC prévu et s'accumulent sur un BC existant du fournisseur pour le projet (frais divers, "
+        "dépenses de salariés). Choisi à l'écran, ou posé par le rapprochement automatique des dépenses.",
     )
     allowed_envelope_line_ids = fields.Many2many(
         "purchase.order.line", compute="_compute_allowed_envelope_line_ids", string="Enveloppes disponibles"
@@ -81,6 +81,7 @@ class BillPoReconcileWizard(models.TransientModel):
             ("split", "Scinder & rattacher"),
             ("associate", "Associer"),
             ("attach", "Rattacher"),
+            ("append", "Ajouter au BC"),
         ],
         compute="_compute_summary",
     )
@@ -88,13 +89,13 @@ class BillPoReconcileWizard(models.TransientModel):
     # ------------------------------------------------------------------
     # Ouverture et construction des lignes
     # ------------------------------------------------------------------
-    @api.depends("new_order", "project_ids", "move_id.partner_id")
+    @api.depends("new_order", "append_order_id", "project_ids", "move_id.partner_id")
     def _compute_needs_link_type(self):
         """Le type d'achat se choisit seulement quand le BC à créer impose de créer le lien projet / fournisseur."""
         link = self.env["project.outsourcing.link"]
         for wiz in self:
             wiz.needs_link_type = bool(
-                wiz.new_order
+                (wiz.new_order or wiz.append_order_id)
                 and len(wiz.project_ids) == 1
                 and wiz.move_id.partner_id
                 and not link.search_count(
@@ -260,6 +261,7 @@ class BillPoReconcileWizard(models.TransientModel):
         self.project_ids = checked.project_id
         self.order_ids = checked.order_id
         self.new_order = False
+        self.append_order_id = False
         self._apply_default_mode()
         self._rebuild_lines()
         self.envelope_line_id = False
@@ -318,7 +320,7 @@ class BillPoReconcileWizard(models.TransientModel):
         self.envelope_line_id = False
         self._apply_envelope_default()
 
-    @api.onchange("order_ids", "new_order")
+    @api.onchange("order_ids", "new_order", "append_order_id")
     def _onchange_order_ids(self):
         self._apply_default_mode()
         self._rebuild_lines()
@@ -435,7 +437,7 @@ class BillPoReconcileWizard(models.TransientModel):
                 candidates.append(vals)
                 po_cmds.append(Command.create(vals))
         # Présélection automatique par montant : seulement si la combinaison est unique
-        if self.mode == "replacement" and not self.new_order and unlinked:
+        if self.mode == "replacement" and not self.new_order and not self.append_order_id and unlinked:
             target = sum(unlinked.mapped("price_subtotal"))
             pool = [
                 (i, v["amount_open"])
@@ -516,6 +518,8 @@ class BillPoReconcileWizard(models.TransientModel):
     def _compute_button_key(self):
         self.ensure_one()
         pols = self.po_line_ids.filtered("selected")
+        if self.append_order_id and not pols:
+            return "append"
         if self.new_order and not pols:
             return "create"
         if not pols:
@@ -605,6 +609,7 @@ class BillPoReconcileWizard(models.TransientModel):
     def action_new_order(self):
         self.ensure_one()
         self.new_order = True
+        self.append_order_id = False
         self._onchange_order_ids()
         return self._reopen()
 
@@ -767,9 +772,18 @@ class BillPoReconcileWizard(models.TransientModel):
             }
         )
         order.button_confirm()
+        self._mark_received(order.order_line)
         for aml, pol in zip(amls, order.order_line):
             aml.purchase_line_id = pol.id
         return order
+
+    @api.model
+    def _mark_received(self, pols):
+        """Pose « reçu = commandé » : pour un article facturé à la réception, la quantité à facturer est
+        « reçue − facturée » ; sans cela, une ligne créée par le rapprochement n'aurait jamais de quantité à facturer
+        juste (nulle ou négative). C'est ce que les utilisateurs font déjà à la main sur les lignes de BC."""
+        for pol in pols.filtered(lambda p: not p.display_type):
+            pol.qty_received = pol.product_qty
 
     # -- cas 1 bis : ajout à un BC existant (dépenses) --------------------------
     def _do_append_to_order(self, amls):
@@ -779,6 +793,7 @@ class BillPoReconcileWizard(models.TransientModel):
         amls, vals_list = self._order_lines_vals(amls)
         self._ensure_supplier_link()
         pols = self.env["purchase.order.line"].create([dict(vals, order_id=order.id) for vals in vals_list])
+        self._mark_received(pols)
         for aml, pol in zip(amls, pols):
             aml.purchase_line_id = pol.id
         return order
@@ -805,6 +820,7 @@ class BillPoReconcileWizard(models.TransientModel):
             else:
                 price_unit = pol.price_unit
                 resell = pol.reselling_price_unit
+                fully_received = float_compare(pol.qty_received, pol.product_qty, precision_digits=4) == 0
                 target = pol.copy(
                     {
                         "product_qty": consumed,
@@ -814,6 +830,8 @@ class BillPoReconcileWizard(models.TransientModel):
                     }
                 )
                 pol.write({"product_qty": pol.product_qty - consumed, "price_unit": price_unit})
+                if fully_received:  # la quantité reçue suit la quantité commandée, des deux côtés de la scission
+                    self._mark_received(pol | target)
             target.qty_invoiced_override = True
             aml_group.write({"purchase_line_id": target.id})
             touched |= pol.order_id
@@ -887,6 +905,7 @@ class BillPoReconcileWizard(models.TransientModel):
                 }
             )
             new_pol = self.env["purchase.order.line"].create(vals)
+            self._mark_received(new_pol)
             aml.purchase_line_id = new_pol.id
         normal.with_context(bill_po_reconcile_replace=True).unlink()
 
@@ -908,6 +927,7 @@ class BillPoReconcileWizard(models.TransientModel):
         ratio_open = amount_open / subtotal
         ratio_invoiced = 1.0 - ratio_open
         price_unit, resell = pol.price_unit, pol.reselling_price_unit
+        fully_received = float_compare(pol.qty_received, pol.product_qty, precision_digits=4) == 0
         new_pol = pol.copy(
             {
                 "price_unit": price_unit * ratio_open,
@@ -916,6 +936,8 @@ class BillPoReconcileWizard(models.TransientModel):
                 "qty_invoiced_override": True,
             }
         )
+        if fully_received:  # la copie ne reprend pas la quantité reçue
+            self._mark_received(new_pol)
         pol.write({"price_unit": price_unit * ratio_invoiced, "reselling_price_unit": resell * ratio_invoiced})
         return new_pol
 

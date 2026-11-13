@@ -22,12 +22,15 @@
                     <group invisible="not project_ids">
                         <div colspan="2">
                             <button name="action_new_order" type="object" string="+ Nouveau BC"
-                                    class="btn-secondary" invisible="new_order" />
+                                    class="btn-secondary" invisible="new_order or append_order_id" />
                             <span invisible="not new_order">BC à créer
                                 <button name="action_cancel_new_order" type="object" string="Annuler"
                                         class="btn-link" />
                             </span>
                         </div>
+                        <field name="append_order_id" invisible="new_order or not allowed_order_ids"
+                               options="{'no_create': True, 'no_open': True}"
+                               domain="[('id', 'in', allowed_order_ids)]" placeholder="Ajouter à un BC existant…" />
                         <field name="mode" widget="radio" options="{'horizontal': true}" />
                     </group>
                 </group>
@@ -101,6 +104,8 @@
                             invisible="button_key != 'associate' or not is_valid" />
                     <button name="action_associate" type="object" string="Rattacher" class="btn-primary"
                             invisible="button_key != 'attach' or not is_valid" />
+                    <button name="action_associate" type="object" string="Ajouter au BC" class="btn-primary"
+                            invisible="button_key != 'append' or not is_valid" />
                     <field name="is_valid" invisible="1" />
                     <button string="Annuler" class="btn-secondary" special="cancel" />
                 </footer>

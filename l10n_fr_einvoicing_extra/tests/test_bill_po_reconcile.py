@@ -139,6 +139,36 @@ class TestBillPoReconcile(TransactionCase):
         wiz2.action_associate()
         self.assertEqual(len(project.project_outsourcing_link_ids), 1)
 
+    def test_append_to_existing_order(self):
+        """Une facture sans BC prévu s'ajoute à un BC existant du fournisseur pour le projet, au lieu d'en créer un."""
+        po = self._make_po([("Frais de mars", 1, 300.0)])
+        bill = self._make_bill([("Frais d'avril", 1, 120.0), ("Frais de mai", 2, 40.0)], analytic=False)
+        wiz = self._wizard(bill)
+        self.assertIn(po, wiz.allowed_order_ids)
+        wiz.append_order_id = po
+        wiz._onchange_order_ids()
+        self.assertEqual(wiz.button_key, "append")
+        self.assertTrue(wiz.is_valid, wiz.message)
+        wiz.action_associate()
+        self.assertEqual(len(po.order_line), 3)  # la ligne d'origine est intacte, une ligne par ligne de facture
+        self.assertEqual(bill.invoice_line_ids.purchase_line_id.order_id, po)
+        self.assertEqual(po.state, "purchase")
+        self.assertEqual(self.env["purchase.order"].search_count([("partner_id", "=", self.supplier.id)]), 1)
+
+    def test_append_is_standalone_and_exclusive_with_new_order(self):
+        po = self._make_po([("Frais de mars", 1, 300.0)])
+        bill = self._make_bill([("Frais d'avril", 1, 120.0)], analytic=False)
+        wiz = self._wizard(bill)
+        wiz.append_order_id = po
+        wiz._onchange_order_ids()
+        wiz.po_line_ids.filtered("selectable")[:1].selected = True
+        self.assertFalse(wiz.is_valid)
+        self.assertIn("se traite seul", wiz.message)
+        wiz.po_line_ids.selected = False
+        wiz.action_new_order()  # choisir « nouveau BC » annule l'ajout
+        self.assertFalse(wiz.append_order_id)
+        self.assertEqual(wiz.button_key, "create")
+
     # ------------------------------------------------------------------ cas 2 remplacement
     def test_replacement_ekuanim(self):
         po = self._make_po([("40%", 1, 4320.0), ("60%", 1, 6480.0)])
@@ -209,6 +239,47 @@ class TestBillPoReconcile(TransactionCase):
         self.assertFalse(wiz.is_valid)
         with self.assertRaises(UserError):
             wiz.action_associate()
+
+    # ------------------------------------------------------------------ quantité reçue / à facturer
+    def test_received_quantity_follows_lines_created_by_the_wizard(self):
+        """Article facturé à la réception : sans quantité reçue sur les lignes créées, la quantité à facturer
+        (reçue − facturée) serait négative."""
+        self.product.purchase_method = "receive"
+        # BC créé depuis la facture
+        bill = self._make_bill([("Animation", 2, 800.0)], analytic=False)
+        wiz = self._wizard(bill)
+        wiz.new_order = True
+        wiz._onchange_order_ids()
+        wiz.action_associate()
+        created = bill.invoice_line_ids.purchase_line_id
+        self.assertEqual(created.qty_received, 2)
+        self.assertEqual(created.qty_to_invoice, 0)
+        # ajout à un BC existant
+        bill2 = self._make_bill([("Suite", 3, 100.0)], analytic=False)
+        wiz2 = self._wizard(bill2)
+        wiz2.append_order_id = created.order_id
+        wiz2._onchange_order_ids()
+        wiz2.action_associate()
+        appended = bill2.invoice_line_ids.purchase_line_id
+        self.assertEqual(appended.qty_received, 3)
+        self.assertEqual(appended.qty_to_invoice, 0)
+
+    def test_received_quantity_after_consumption_split(self):
+        self.product.purchase_method = "receive"
+        po = self._make_po([("Jours", 30, 800.0)])
+        pol = po.order_line
+        pol.qty_received = 30  # usage : reçu = commandé
+        self.assertEqual(pol.qty_to_invoice, 30)
+        bill = self._make_bill([("12 jours à 800", 1, 9600.0)])
+        wiz = self._wizard(bill)
+        self._select(wiz, pol, qty=12)
+        wiz.action_associate()
+        closed = bill.invoice_line_ids.purchase_line_id
+        self.assertEqual(pol.product_qty, 18)
+        self.assertEqual(pol.qty_received, 18)
+        self.assertEqual(pol.qty_to_invoice, 18)  # le reste à facturer est juste
+        self.assertEqual(closed.qty_received, 12)
+        self.assertEqual(closed.qty_to_invoice, 0)
 
     # ------------------------------------------------------------------ cas 2quinquies
     def test_partially_invoiced_line_is_split_never_deleted(self):
