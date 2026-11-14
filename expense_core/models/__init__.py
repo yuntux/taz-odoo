@@ -1,5 +1,6 @@
 from . import account_invoice_import
 from . import account_move
+from . import account_move_capture
 from . import expense_ocr
 from . import product_template
 from . import purchase_order_line

@@ -6,3 +6,4 @@ from . import test_employee_flow
 from . import test_po_reconcile
 from . import test_invoice_ocr
 from . import test_alerts
+from . import test_capture

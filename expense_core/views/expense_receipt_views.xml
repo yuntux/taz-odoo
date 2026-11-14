@@ -84,6 +84,12 @@
 
     <menuitem id="menu_expense_root" name="Notes de frais" sequence="45"
               groups="taz-common.taz-basic" web_icon="account,static/description/icon.png"/>
+    <record id="action_expense_capture" model="ir.actions.client">
+        <field name="name">Photographier un ticket</field>
+        <field name="tag">expense_core.receipt_capture</field>
+    </record>
+    <menuitem id="menu_expense_capture" name="Photographier un ticket" sequence="0"
+              parent="menu_expense_root" action="action_expense_capture"/>
     <menuitem id="menu_expense_my_receipts" name="Mes notes de frais" sequence="1"
               parent="menu_expense_root" action="action_expense_my_receipts"/>
 

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="expense_core.ReceiptCapture">
+        <div class="o_expense_capture">
+            <t t-if="state.step === 'error'">
+                <div class="o_expense_capture_message">
+                    <i class="fa fa-camera fa-3x mb-3 text-muted"/>
+                    <p t-esc="state.error"/>
+                    <div class="d-flex flex-column gap-2">
+                        <button class="btn btn-primary btn-lg" t-on-click="onImportClick">
+                            <i class="fa fa-image me-2"/>Importer une photo
+                        </button>
+                        <button class="btn btn-secondary" t-on-click="onRetake">Réessayer la caméra</button>
+                    </div>
+                </div>
+            </t>
+            <t t-else="">
+                <div class="o_expense_capture_stage">
+                    <video t-ref="video" class="o_expense_capture_video" playsinline="playsinline" muted="muted"
+                           t-att-class="{'d-none': state.step !== 'live' and state.step !== 'starting'}"/>
+                    <canvas t-ref="overlay" class="o_expense_capture_overlay"
+                            t-att-class="{'d-none': state.step !== 'live'}"/>
+                    <img t-if="state.previewUrl" class="o_expense_capture_preview" t-att-src="state.previewUrl" alt="Ticket"/>
+                    <div t-if="state.step === 'starting' or state.step === 'saving'" class="o_expense_capture_wait">
+                        <i class="fa fa-circle-o-notch fa-spin fa-2x"/>
+                        <div t-if="state.step === 'saving'" class="mt-2">Lecture du ticket en cours…</div>
+                    </div>
+                </div>
+                <div t-if="state.step === 'live'" class="o_expense_capture_hint" t-esc="state.hint"
+                     t-att-class="{'o_detected': state.detected}"/>
+                <div class="o_expense_capture_bar">
+                    <t t-if="state.step === 'live' or state.step === 'starting'">
+                        <button class="btn btn-light" t-on-click="onImportClick" title="Importer une photo">
+                            <i class="fa fa-image fa-lg"/>
+                        </button>
+                        <button class="o_expense_capture_shutter" t-on-click="onShootClick"
+                                t-att-disabled="state.step !== 'live'" title="Prendre la photo"/>
+                        <span class="o_expense_capture_spacer"/>
+                    </t>
+                    <t t-elif="state.step === 'preview' or state.step === 'saving'">
+                        <button class="btn btn-secondary btn-lg" t-on-click="onRetake" t-att-disabled="state.step === 'saving'">
+                            Reprendre
+                        </button>
+                        <button class="btn btn-primary btn-lg" t-on-click="onValidate" t-att-disabled="state.step === 'saving'">
+                            <i class="fa fa-check me-2"/>Valider
+                        </button>
+                    </t>
+                </div>
+            </t>
+            <input t-ref="file" type="file" accept="image/*" capture="environment" class="d-none" t-on-change="onFileChosen"/>
+        </div>
+    </t>
+
+</templates>

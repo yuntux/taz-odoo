@@ -40,4 +40,11 @@ s'applique aux fournisseurs qui n'ont pas de mode de paiement préféré.
         'views/expense_receipt_views.xml',
         'views/res_config_settings_views.xml',
     ],
+
+    'assets': {
+        # OpenCV.js (static/lib/opencv) n'est pas dans le paquet : l'écran le charge à la demande.
+        'web.assets_backend': [
+            'expense_core/static/src/receipt_capture/*',
+        ],
+    },
 }

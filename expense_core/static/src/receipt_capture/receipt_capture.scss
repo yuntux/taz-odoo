@@ -1,0 +1,85 @@
+.o_expense_capture {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: #111;
+    color: #fff;
+
+    .o_expense_capture_stage {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+    }
+
+    .o_expense_capture_video,
+    .o_expense_capture_preview {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+    }
+
+    // Le calque de détection a les dimensions intrinsèques de la vidéo : il se superpose à elle, de même taille affichée.
+    .o_expense_capture_overlay {
+        position: absolute;
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+        pointer-events: none;
+    }
+
+    .o_expense_capture_wait {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.55);
+    }
+
+    .o_expense_capture_hint {
+        text-align: center;
+        padding: 0.5rem 1rem;
+        background: rgba(0, 0, 0, 0.7);
+
+        &.o_detected {
+            color: #7ee08f;
+        }
+    }
+
+    .o_expense_capture_bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-around;
+        padding: 1rem;
+        background: #000;
+    }
+
+    .o_expense_capture_spacer {
+        width: 3rem;
+    }
+
+    .o_expense_capture_shutter {
+        width: 4.5rem;
+        height: 4.5rem;
+        border-radius: 50%;
+        border: 4px solid #fff;
+        background: #fff;
+        box-shadow: inset 0 0 0 4px #000;
+
+        &:disabled {
+            opacity: 0.4;
+        }
+    }
+
+    .o_expense_capture_message {
+        margin: auto;
+        padding: 2rem;
+        max-width: 24rem;
+        text-align: center;
+    }
+}
