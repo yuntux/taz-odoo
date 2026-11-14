@@ -9,19 +9,10 @@
         <field name="model">account.move</field>
         <field name="priority">99</field>
         <field name="arch" type="xml">
-            <form string="Reçu de dépense">
-                <header>
-                    <button name="action_run_ocr" string="Lire le justificatif" type="object"
-                            invisible="state != 'draft' or validation_status != 'no'"/>
-                    <!-- Le demandeur envoie sa dépense en validation (bon à payer : Office, puis directeur de mission).
-                         Les niveaux sont ceux de data/tier_definition_data.xml : aucun niveau de plus n'est nécessaire. -->
-                    <button name="request_validation" string="Envoyer en validation" type="object" class="oe_highlight"
-                            invisible="not need_validation or validation_status == 'rejected' or hide_reviews"/>
-                    <button name="restart_validation" string="Corriger et renvoyer" type="object"
-                            invisible="validation_status != 'rejected' or hide_reviews"/>
-                    <field name="state" widget="statusbar" statusbar_visible="draft,posted"/>
-                </header>
+            <!-- create="0" : un reçu se crée par l'écran « Photographier un ticket », pas par un formulaire vide. -->
+            <form string="Reçu de dépense" create="0">
                 <sheet>
+                    <field name="state" invisible="1"/>
                     <field name="validation_status" invisible="1"/>
                     <field name="need_validation" invisible="1"/>
                     <field name="hide_reviews" invisible="1"/>
@@ -37,6 +28,9 @@
                     </div>
                     <div class="alert alert-danger mb-0" role="alert" invisible="validation_status != 'rejected'">
                         Dépense refusée : voir le motif ci-dessous, corrigez puis renvoyez-la.
+                    </div>
+                    <div class="mb-2" invisible="state != 'draft' or validation_status != 'no'">
+                        <button name="action_run_ocr" string="Lire le justificatif" type="object" class="btn btn-secondary"/>
                     </div>
                     <group>
                         <field name="move_type" invisible="1"/>
@@ -89,8 +83,37 @@
                             <field name="comment"/>
                         </list>
                     </field>
+                    <!-- Le demandeur envoie sa dépense en validation (bon à payer : Office, puis directeur de mission).
+                         Les niveaux sont ceux de data/tier_definition_data.xml, livrés inactifs : tant qu'ils ne sont pas
+                         activés, need_validation est faux et ce bouton n'apparaît pas. -->
+                    <div class="mt-3">
+                        <button name="request_validation" string="Envoyer en validation" type="object"
+                                class="btn btn-primary btn-lg w-100"
+                                invisible="not need_validation or validation_status == 'rejected' or hide_reviews"/>
+                        <button name="restart_validation" string="Corriger et renvoyer" type="object"
+                                class="btn btn-primary btn-lg w-100"
+                                invisible="validation_status != 'rejected' or hide_reviews"/>
+                    </div>
                 </sheet>
             </form>
+        </field>
+    </record>
+
+    <!-- Liste de « Mes notes de frais », sans bouton « Nouveau » (create="0") : la création passe par la photo. -->
+    <record id="view_expense_receipt_list" model="ir.ui.view">
+        <field name="name">account.move.list.expense.receipt</field>
+        <field name="model">account.move</field>
+        <field name="priority">99</field>
+        <field name="arch" type="xml">
+            <list string="Mes notes de frais" create="0" decoration-muted="state == 'cancel'">
+                <field name="invoice_date" string="Date"/>
+                <field name="expense_merchant_id"/>
+                <field name="comment" string="Description"/>
+                <field name="amount_total" string="Total TTC" sum="Total"/>
+                <field name="currency_id" column_invisible="1"/>
+                <field name="validation_status" widget="badge" optional="show"/>
+                <field name="state" widget="badge" optional="show"/>
+            </list>
         </field>
     </record>
 
@@ -104,7 +127,7 @@
     <record id="action_expense_my_receipts_list" model="ir.actions.act_window.view">
         <field name="sequence" eval="1"/>
         <field name="view_mode">list</field>
-        <field name="view_id" ref="account.view_in_invoice_tree"/>
+        <field name="view_id" ref="view_expense_receipt_list"/>
         <field name="act_window_id" ref="action_expense_my_receipts"/>
     </record>
     <record id="action_expense_my_receipts_form" model="ir.actions.act_window.view">
