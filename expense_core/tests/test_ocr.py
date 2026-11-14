@@ -14,8 +14,14 @@ def money(amount):
     return {'valueCurrency': {'amount': amount, 'currencyCode': 'EUR'}}
 
 
+SIRET = '73282932000074'
+SIREN = '732829320'
+VAT = 'FR44732829320'
+TICKET_TEXT = 'BISTROT DES DUCS\nSIRET : 732 829 320 00074\nTVA intracom FR44 732 829 320\nCB 4970 1234 5678 90'
+
+
 def azure_response(total=38.4, tax=3.49, confidence=0.97, merchant='TAXI PARISIEN', items=None, rate=None,
-                   details=None):
+                   details=None, content=''):
     if items is None:
         items = [('Course', total)]
     array = []
@@ -36,7 +42,7 @@ def azure_response(total=38.4, tax=3.49, confidence=0.97, merchant='TAXI PARISIE
         fields['TaxDetails'] = {'valueArray': [{'valueObject': {
             'Rate': {'valueNumber': rate}, 'NetAmount': money(net), 'Amount': money(amount)}}
             for rate, net, amount in details]}
-    return {'status': 'succeeded', 'analyzeResult': {'documents': [{'fields': fields}]}}
+    return {'status': 'succeeded', 'analyzeResult': {'documents': [{'fields': fields}], 'content': content}}
 
 
 @tagged('post_install', '-at_install')
@@ -364,3 +370,78 @@ class TestExpenseOcr(TransactionCase):
         self.assertFalse(receipt.ocr_result_ids)
         self.assertEqual(self.post_mock.call_count, 0)
         self.env['ir.config_parameter'].sudo().set_param('expense_core.ocr_provider', 'azure')
+
+    # --- identifiants du commerçant (SIRET, SIREN, TVA) ------------------
+    def test_identifiers_are_read_from_the_text_with_their_check_keys(self):
+        read = self.env['expense.ocr'].extract_identifiers
+        self.assertEqual(read(TICKET_TEXT), {'siret': SIRET, 'siren': SIREN, 'vat': VAT})
+        self.assertEqual(read('SIREN 732 829 320'), {'siret': '', 'siren': SIREN, 'vat': ''})
+        self.assertEqual(read('TVA FR 44 732829320'), {'siret': '', 'siren': SIREN, 'vat': VAT})
+        # clé fausse, nombre sans libellé, texte vide : rien
+        self.assertEqual(read('SIRET 732 829 320 00075 FR45 732 829 320'), {'siret': '', 'siren': '', 'vat': ''})
+        self.assertEqual(read('ticket 73282932000074'), {'siret': '', 'siren': '', 'vat': ''})
+        self.assertEqual(read(None), {'siret': '', 'siren': '', 'vat': ''})
+        # TVA qui n'est pas celle du SIRET : on ne garde que le SIRET
+        self.assertEqual(read(f'SIRET {SIRET} FR40303265045'), {'siret': SIRET, 'siren': SIREN, 'vat': ''})
+
+    def test_azure_result_carries_the_identifiers(self):
+        with self._azure(azure_response(content=TICKET_TEXT)), patch.object(expense_ocr.time, 'sleep'):
+            result = self.env['expense.ocr'].analyze(b'x', 'image/png')
+        self.assertEqual((result['siret'], result['siren'], result['vat']), (SIRET, SIREN, VAT))
+
+    def _merchant_receipt(self, content=TICKET_TEXT):
+        return self._read(azure_response(merchant='BISTROT DES DUCS', content=content))
+
+    def _company(self, **vals):
+        return self.env['res.partner'].create(dict({'name': 'Bistrot', 'is_company': True}, **vals))
+
+    def test_merchant_is_found_by_siret_even_with_another_name(self):
+        merchant = self._company(name='Les Ducs SAS', siret=SIRET)
+        self.assertEqual(self._merchant_receipt().expense_merchant_id, merchant)
+
+    def test_merchant_is_found_by_vat_then_by_siren(self):
+        by_vat = self._company(name='Par TVA', vat=VAT)
+        self.assertEqual(self._merchant_receipt().expense_merchant_id, by_vat)
+        by_vat.vat = False
+        by_siren = self._company(name='Par SIREN', siren=SIREN)
+        self.assertEqual(self._merchant_receipt().expense_merchant_id, by_siren)
+
+    def test_a_company_and_its_contact_with_the_same_siret_give_the_company(self):
+        company = self._company(name='Les Ducs SAS', siret=SIRET)
+        self.env['res.partner'].create({'name': 'Le gérant', 'parent_id': company.id})
+        self.assertEqual(self._merchant_receipt().expense_merchant_id, company)
+
+    def test_several_unrelated_records_with_the_same_siret_are_not_guessed(self):
+        first = self._company(name='Ducs A', siret=SIRET)
+        second = self._company(name='Ducs B', siret=SIRET)
+        receipt = self._merchant_receipt()
+        self.assertFalse(receipt.expense_merchant_id)
+        body = ' '.join(receipt.message_ids.mapped('body'))
+        self.assertIn('Plusieurs fiches', body)
+        self.assertIn('Ducs A', body)
+        self.assertIn('Ducs B', body)
+        self.assertEqual(self.env['res.partner'].search_count([('siret', '=', SIRET)]), 2)
+        self.assertTrue(first and second)
+
+    def test_unknown_merchant_with_a_valid_identifier_is_created(self):
+        receipt = self._merchant_receipt()
+        merchant = receipt.expense_merchant_id
+        self.assertEqual(merchant.name, 'BISTROT DES DUCS')
+        self.assertTrue(merchant.is_company)
+        self.assertEqual((merchant.siret, merchant.siren, merchant.vat), (SIRET, SIREN, VAT))
+        self.assertEqual(merchant.country_id.code, 'FR')
+        self.assertIn('créée', ' '.join(receipt.message_ids.mapped('body')))
+        # la lecture suivante retrouve la fiche au lieu d'en créer une autre
+        self.assertEqual(self._merchant_receipt().expense_merchant_id, merchant)
+
+    def test_merchant_without_identifier_is_not_created(self):
+        receipt = self._merchant_receipt(content='BISTROT DES DUCS\nMerci de votre visite')
+        self.assertFalse(receipt.expense_merchant_id)
+        self.assertFalse(self.env['res.partner'].search([('name', '=', 'BISTROT DES DUCS')]))
+
+    def test_an_archived_record_prevents_the_creation(self):
+        self._company(name='Ancien Bistrot', siret=SIRET).active = False
+        receipt = self._merchant_receipt()
+        self.assertFalse(receipt.expense_merchant_id)
+        self.assertFalse(self.env['res.partner'].search([('name', '=', 'BISTROT DES DUCS')]))
+        self.assertIn('archivée', ' '.join(receipt.message_ids.mapped('body')))

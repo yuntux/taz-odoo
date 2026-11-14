@@ -4,6 +4,7 @@ import time
 from datetime import date
 
 import requests
+from stdnum.fr import siren as stdnum_siren, siret as stdnum_siret, tva as stdnum_tva
 
 from odoo import _, api, models
 from odoo.exceptions import UserError
@@ -24,7 +25,11 @@ class ExpenseOcr(models.AbstractModel):
         {'merchant': str, 'date': date | None, 'total': float | None, 'tax_total': float | None,
          'currency': str | None, 'lines': [{'name': str, 'amount': float TTC, 'tax_rate': float | None}],
          'tax_details': [{'rate': float | None, 'net': float | None, 'tax': float | None}],
+         'siret': str, 'siren': str, 'vat': str,
          'confidence': float}
+
+    siret, siren et vat sont les identifiants du commerçant imprimés sur le ticket (chaîne vide si absents ou si la clé
+    de contrôle est fausse) : le modèle de reçus d'Azure ne les renvoie pas, ils sont cherchés dans le texte lu.
 
     tax_details est le récapitulatif de TVA par taux imprimé au pied du ticket (TaxDetails d'Azure).
 
@@ -87,6 +92,41 @@ class ExpenseOcr(models.AbstractModel):
         raise UserError(_("Le service OCR n'a pas répondu à temps."))
 
     @staticmethod
+    def extract_identifiers(text):
+        """SIRET, SIREN et numéro de TVA français lus dans le texte d'un ticket, clés de contrôle vérifiées.
+
+        Le SIRET et le SIREN ne sont pris qu'après leur libellé (un nombre de 14 chiffres seul peut être un numéro de
+        carte ou de ticket) ; le numéro de TVA est reconnaissable à son préfixe FR. Retourne
+        {'siret': str, 'siren': str, 'vat': str}, chaînes vides si rien de valide. Le SIREN se déduit du SIRET, ou du
+        numéro de TVA à défaut.
+        """
+        text = text or ''
+        found = {'siret': '', 'siren': '', 'vat': ''}
+        for match in re.finditer(r'SIRET\b[^\d\n]{0,12}(\d(?:[ .\u00a0]?\d){13})(?![ .\u00a0]?\d)', text, re.I):
+            candidate = re.sub(r'\D', '', match.group(1))
+            if stdnum_siret.is_valid(candidate):
+                found['siret'] = candidate
+                break
+        for match in re.finditer(r'\bFR[ .\u00a0]?([0-9A-Z]{2})[ .\u00a0]?(\d(?:[ .\u00a0]?\d){8})(?![ .\u00a0]?\d)', text):
+            candidate = 'FR' + match.group(1) + re.sub(r'\D', '', match.group(2))
+            if stdnum_tva.is_valid(candidate):
+                found['vat'] = candidate
+                break
+        if found['siret']:
+            found['siren'] = found['siret'][:9]
+        else:
+            for match in re.finditer(r'SIREN\b[^\d\n]{0,12}(\d(?:[ .\u00a0]?\d){8})(?![ .\u00a0]?\d)', text, re.I):
+                candidate = re.sub(r'\D', '', match.group(1))
+                if stdnum_siren.is_valid(candidate):
+                    found['siren'] = candidate
+                    break
+        if not found['siren'] and found['vat']:
+            found['siren'] = found['vat'][-9:]
+        if found['siret'] and found['vat'] and found['vat'][-9:] != found['siren']:
+            found['vat'] = ''  # incohérent avec le SIRET : on ne garde que le SIRET
+        return found
+
+    @staticmethod
     def _parse_rate(field):
         """Taux de TVA d'un champ Azure : un nombre (receipt) ou un texte comme « 18 % » (invoice)."""
         if not field:
@@ -135,8 +175,10 @@ class ExpenseOcr(models.AbstractModel):
         confidences = [
             fields[name].get('confidence') for name in ('MerchantName', 'TransactionDate', 'Total')
             if name in fields and fields[name].get('confidence') is not None]
+        identifiers = cls.extract_identifiers((data.get('analyzeResult') or {}).get('content'))
         return {
             'merchant': text('MerchantName') or '',
+            **identifiers,
             'date': date.fromisoformat(day) if day else None,
             'total': total,
             'tax_total': tax_total,

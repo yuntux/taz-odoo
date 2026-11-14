@@ -32,7 +32,9 @@ class AccountMove(models.Model):
     )
     expense_merchant_id = fields.Many2one(
         'res.partner', string="Fiche du commerçant", copy=False, domain=[('is_company', '=', True)],
-        help="Commerçant qui a facturé, quand il est connu (facultatif, jamais créé automatiquement). Sur un "
+        help="Commerçant qui a facturé, quand il est connu (facultatif). La lecture du ticket le retrouve par son "
+             "SIRET, son numéro de TVA, son SIREN ou son nom, et crée sa fiche si le ticket porte un identifiant "
+             "valide qu'aucune fiche ne connaît. Sur un "
              "reçu de salarié, le tiers comptable est le salarié remboursé : le commerçant reste ici.",
     )
     expense_category_id = fields.Many2one(
@@ -499,6 +501,72 @@ class AccountMove(models.Model):
                 vals, product_id=template.product_id.id, analytic_distribution=template.analytic_distribution))]})
         return notes
 
+    @api.model
+    def _ocr_find_merchant(self, data):
+        """Fiche du commerçant d'un ticket lu : (partenaire ou None, remarque pour le chatter ou None).
+
+        Les identifiants imprimés sur le ticket passent avant le nom, du plus précis au moins précis : SIRET (un
+        établissement), numéro de TVA, SIREN (l'entreprise). On s'arrête au premier niveau qui trouve des fiches :
+        - une seule fiche : c'est elle ;
+        - plusieurs fiches de la même entreprise (une société et ses contacts) : la société ;
+        - plusieurs fiches sans lien entre elles : doublons ou établissements, on ne devine pas. Aucune fiche n'est
+          posée ni créée, et la remarque les nomme pour que le salarié ou la comptabilité choisisse.
+        Sans identifiant trouvé, le nom exact de la société reste le dernier recours.
+        Si rien n'est trouvé mais que le ticket porte un identifiant valide, la fiche est créée : l'identité du
+        commerçant est alors sûre. Une fiche archivée qui correspond empêche la création (elle serait un doublon).
+        """
+        Partner = self.env['res.partner']
+        siret, siren, vat = (data.get(key) or '' for key in ('siret', 'siren', 'vat'))
+        levels = [
+            ('SIRET', [('siret', '=', siret)] if siret else None),
+            ('TVA', [('vat', '=ilike', vat)] if vat else None),
+            ('SIREN', [('siren', '=', siren)] if siren else None),
+        ]
+        archived = Partner
+        for label, domain in levels:
+            if not domain:
+                continue
+            partners = Partner.search(domain)
+            if not partners:
+                archived |= Partner.with_context(active_test=False).search(domain + [('active', '=', False)])
+                continue
+            companies = partners.mapped('commercial_partner_id')
+            if len(companies) == 1:
+                return companies, None
+            names = ', '.join(companies.mapped('display_name'))
+            return None, _(
+                "plusieurs fiches portent le même %(label)s (%(names)s) : le commerçant n'a pas été choisi",
+                label=label, names=names)
+        name = (data.get('merchant') or '').strip()
+        if name:
+            partners = Partner.search([('is_company', '=', True), ('name', '=ilike', name)], limit=2)
+            if len(partners) == 1:
+                return partners, None
+        if archived:
+            return None, _("une fiche archivée (%s) correspond au commerçant : elle n'a pas été réactivée",
+                           ', '.join(archived.mapped('display_name')))
+        if name and (siret or siren or vat):
+            return self._ocr_create_merchant(data), _(
+                "la fiche du commerçant a été créée d'après les identifiants du ticket : à compléter par la comptabilité")
+        return None, None
+
+    @api.model
+    def _ocr_create_merchant(self, data):
+        """Crée la fiche d'un commerçant dont le ticket donne un identifiant valide (voir _ocr_find_merchant)."""
+        siret, siren, vat = (data.get(key) or '' for key in ('siret', 'siren', 'vat'))
+        vals = {
+            'name': data['merchant'].strip(), 'is_company': True, 'company_id': False,
+            'country_id': self.env.ref('base.fr').id, 'supplier_rank': 1,
+        }
+        if siret:
+            vals['siret'] = siret
+        elif siren:
+            vals['siren'] = siren
+        if vat:
+            vals['vat'] = vat
+        # Un salarié n'a pas le droit de créer un contact : la fiche est créée par le système.
+        return self.env['res.partner'].sudo().create(vals)
+
     def _apply_ocr_result(self, data):
         """Pré-remplit la pièce avec la lecture : jamais par-dessus une valeur déjà saisie.
 
@@ -513,20 +581,21 @@ class AccountMove(models.Model):
         if data.get('date') and not self.invoice_date:
             self.invoice_date = data['date']
         merchant = (data.get('merchant') or '').strip()
-        if merchant and not self.expense_merchant_id:
-            partners = self.env['res.partner'].search(
-                [('is_company', '=', True), ('name', '=ilike', merchant)], limit=2)
-            if len(partners) == 1:
-                self.expense_merchant_id = partners
-        total = data.get('total')
         notes = []
+        if not self.expense_merchant_id:
+            partner, merchant_note = self._ocr_find_merchant(data)
+            if partner:
+                self.expense_merchant_id = partner
+            if merchant_note:
+                notes.append(merchant_note)
+        total = data.get('total')
         if total and not self.invoice_line_ids:
             # Un reçu créé sans passer par le formulaire (écran « Photographier un ticket ») n'a pas la ligne vide que
             # le formulaire ajoute : elle est posée ici, pour que la lecture la remplisse.
             self.write({'invoice_line_ids': [Command.create({'name': merchant or '/', 'quantity': 1, 'price_unit': 0})]})
         template = self.invoice_line_ids[:1]
         if total and len(self.invoice_line_ids) == 1 and not template.price_unit and not template.tax_ids:
-            notes = self._ocr_fill_lines(data, template)
+            notes += self._ocr_fill_lines(data, template)
         elif total:
             notes.append(_("la pièce contenait déjà des lignes : elles n'ont pas été modifiées"))
         parts = []
