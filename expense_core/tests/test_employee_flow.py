@@ -120,6 +120,12 @@ class TestEmployeeFlow(TransactionCase):
         arch = arch if isinstance(arch, str) else arch.decode()
         self.assertIn('expense_project_id', arch)
         self.assertIn('allowed_project_ids', arch)
+        # Commentaire obligatoire, bouton d'envoi en validation, ni chatter ni liste de lignes visible.
+        self.assertRegex(arch, r'name="comment"[^>]*required="1"')
+        self.assertIn('name="request_validation"', arch)
+        self.assertNotIn('o_mail_chatter', arch)
+        self.assertNotIn('oe-chatter', arch)
+        self.assertRegex(arch, r'<field name="invoice_line_ids"[^>]*invisible="1"')
         action = self.env.ref('expense_core.action_expense_my_receipts')
         self.assertEqual(action.res_model, 'account.move')
         menu = self.env.ref('expense_core.menu_expense_root')

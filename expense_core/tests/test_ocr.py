@@ -17,7 +17,8 @@ def money(amount):
 SIRET = '73282932000074'
 SIREN = '732829320'
 VAT = 'FR44732829320'
-TICKET_TEXT = 'BISTROT DES DUCS\nSIRET : 732 829 320 00074\nTVA intracom FR44 732 829 320\nCB 4970 1234 5678 90'
+MERCHANT = 'COMMERCANT TEST OCR'  # un nom qu'aucune fiche réelle de la base ne porte
+TICKET_TEXT = f'{MERCHANT}\nSIRET : 732 829 320 00074\nTVA intracom FR44 732 829 320\nCB 4970 1234 5678 90'
 
 
 def azure_response(total=38.4, tax=3.49, confidence=0.97, merchant='TAXI PARISIEN', items=None, rate=None,
@@ -390,7 +391,7 @@ class TestExpenseOcr(TransactionCase):
         self.assertEqual((result['siret'], result['siren'], result['vat']), (SIRET, SIREN, VAT))
 
     def _merchant_receipt(self, content=TICKET_TEXT):
-        return self._read(azure_response(merchant='BISTROT DES DUCS', content=content))
+        return self._read(azure_response(merchant=MERCHANT, content=content))
 
     def _company(self, **vals):
         return self.env['res.partner'].create(dict({'name': 'Bistrot', 'is_company': True}, **vals))
@@ -426,7 +427,7 @@ class TestExpenseOcr(TransactionCase):
     def test_unknown_merchant_with_a_valid_identifier_is_created(self):
         receipt = self._merchant_receipt()
         merchant = receipt.expense_merchant_id
-        self.assertEqual(merchant.name, 'BISTROT DES DUCS')
+        self.assertEqual(merchant.name, MERCHANT)
         self.assertTrue(merchant.is_company)
         self.assertEqual((merchant.siret, merchant.siren, merchant.vat), (SIRET, SIREN, VAT))
         self.assertEqual(merchant.country_id.code, 'FR')
@@ -435,13 +436,13 @@ class TestExpenseOcr(TransactionCase):
         self.assertEqual(self._merchant_receipt().expense_merchant_id, merchant)
 
     def test_merchant_without_identifier_is_not_created(self):
-        receipt = self._merchant_receipt(content='BISTROT DES DUCS\nMerci de votre visite')
+        receipt = self._merchant_receipt(content=f'{MERCHANT}\nMerci de votre visite')
         self.assertFalse(receipt.expense_merchant_id)
-        self.assertFalse(self.env['res.partner'].search([('name', '=', 'BISTROT DES DUCS')]))
+        self.assertFalse(self.env['res.partner'].search([('name', '=', MERCHANT)]))
 
     def test_an_archived_record_prevents_the_creation(self):
         self._company(name='Ancien Bistrot', siret=SIRET).active = False
         receipt = self._merchant_receipt()
         self.assertFalse(receipt.expense_merchant_id)
-        self.assertFalse(self.env['res.partner'].search([('name', '=', 'BISTROT DES DUCS')]))
+        self.assertFalse(self.env['res.partner'].search([('name', '=', MERCHANT)]))
         self.assertIn('archivée', ' '.join(receipt.message_ids.mapped('body')))

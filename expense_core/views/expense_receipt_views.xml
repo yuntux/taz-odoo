@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <odoo>
 
-    <!-- Écran de saisie simplifié d'un reçu de dépense, pensé pour le téléphone : la photo se joint dans le chatter,
-         puis « Lire le justificatif » préremplit la date et les lignes, le salarié choisit son projet et les taxes. -->
+    <!-- Écran de saisie simplifié d'un reçu de dépense, pensé pour le téléphone : la photo vient de l'écran
+         « Photographier un ticket », « Lire le justificatif » préremplit la date et les lignes, le salarié choisit son
+         projet, écrit son commentaire et envoie la dépense en validation. Ni lignes ni chatter sur cet écran. -->
     <record id="view_expense_receipt_form" model="ir.ui.view">
         <field name="name">account.move.form.expense.receipt</field>
         <field name="model">account.move</field>
@@ -11,12 +12,31 @@
             <form string="Reçu de dépense">
                 <header>
                     <button name="action_run_ocr" string="Lire le justificatif" type="object"
-                            class="oe_highlight" invisible="state != 'draft'"/>
+                            invisible="state != 'draft' or validation_status != 'no'"/>
+                    <!-- Le demandeur envoie sa dépense en validation (bon à payer : Office, puis directeur de mission).
+                         Les niveaux sont ceux de data/tier_definition_data.xml : aucun niveau de plus n'est nécessaire. -->
+                    <button name="request_validation" string="Envoyer en validation" type="object" class="oe_highlight"
+                            invisible="not need_validation or validation_status == 'rejected' or hide_reviews"/>
+                    <button name="restart_validation" string="Corriger et renvoyer" type="object"
+                            invisible="validation_status != 'rejected' or hide_reviews"/>
                     <field name="state" widget="statusbar" statusbar_visible="draft,posted"/>
                 </header>
                 <sheet>
+                    <field name="validation_status" invisible="1"/>
+                    <field name="need_validation" invisible="1"/>
+                    <field name="hide_reviews" invisible="1"/>
                     <div class="alert alert-warning mb-0" role="alert" invisible="not expense_warning or state != 'draft'">
                         <field name="expense_warning" readonly="1" nolabel="1"/>
+                    </div>
+                    <div class="alert alert-info mb-0" role="alert"
+                         invisible="validation_status not in ['waiting', 'pending']">
+                        En attente de validation : <field name="next_review" readonly="1" nolabel="1" class="d-inline"/>
+                    </div>
+                    <div class="alert alert-success mb-0" role="alert" invisible="validation_status != 'validated'">
+                        Dépense validée.
+                    </div>
+                    <div class="alert alert-danger mb-0" role="alert" invisible="validation_status != 'rejected'">
+                        Dépense refusée : voir le motif ci-dessous, corrigez puis renvoyez-la.
                     </div>
                     <group>
                         <field name="move_type" invisible="1"/>
@@ -32,9 +52,11 @@
                         <field name="expense_project_id" readonly="state != 'draft'"
                                domain="[('id', 'in', allowed_project_ids)]" options="{'no_create': True}"/>
                         <field name="expense_merchant_id" readonly="state != 'draft'" options="{'no_create': True}"/>
+                        <field name="comment" string="Commentaire" required="1" readonly="state != 'draft'"
+                               placeholder="Motif de la dépense (client, participants, objet)"/>
                     </group>
                     <field name="invoice_line_ids" readonly="state != 'draft'" nolabel="1"
-                           invisible="not expense_show_lines"
+                           invisible="1"
                            context="{'default_move_type': move_type, 'journal_id': journal_id,
                                      'default_partner_id': partner_id, 'default_currency_id': currency_id,
                                      'default_product_id': expense_category_id}">
@@ -56,8 +78,18 @@
                         <field name="amount_tax" string="dont TVA"/>
                         <field name="amount_total" string="Total TTC"/>
                     </group>
+                    <!-- Sans chatter, le salarié lit ici la réponse des valideurs (le motif d'un refus). -->
+                    <field name="review_ids" widget="tier_validation" invisible="not review_ids" readonly="1">
+                        <list>
+                            <field name="name"/>
+                            <field name="display_status"/>
+                            <field name="todo_by"/>
+                            <field name="done_by"/>
+                            <field name="reviewed_formated_date"/>
+                            <field name="comment"/>
+                        </list>
+                    </field>
                 </sheet>
-                <chatter/>
             </form>
         </field>
     </record>
