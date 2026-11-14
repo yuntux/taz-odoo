@@ -39,7 +39,8 @@
                         <field name="currency_id" invisible="1"/>
                         <field name="journal_id" invisible="1"/>
                         <field name="allowed_project_ids" invisible="1"/>
-                        <field name="partner_id" readonly="1" string="Salarié remboursé"/>
+                        <field name="partner_id" readonly="1" string="Salarié remboursé"
+                               groups="taz-common.taz-adv"/>
                         <field name="invoice_date" string="Date de la dépense" readonly="state != 'draft'"/>
                         <field name="expense_category_id" readonly="state != 'draft'" options="{'no_create': True}"/>
                         <field name="expense_show_lines" invisible="1"/>
