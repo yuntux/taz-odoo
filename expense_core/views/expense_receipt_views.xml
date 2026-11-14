@@ -52,7 +52,7 @@
                         <field name="expense_project_id" readonly="state != 'draft'"
                                domain="[('id', 'in', allowed_project_ids)]" options="{'no_create': True}"/>
                         <field name="expense_merchant_id" readonly="state != 'draft'" options="{'no_create': True}"/>
-                        <field name="comment" string="Commentaire" required="1" readonly="state != 'draft'"
+                        <field name="comment" string="Description" required="1" readonly="state != 'draft'"
                                placeholder="Motif de la dépense (client, participants, objet)"/>
                     </group>
                     <field name="invoice_line_ids" readonly="state != 'draft'" nolabel="1"
