@@ -92,7 +92,10 @@ class ExpenseOcr(models.AbstractModel):
         if not field:
             return None
         if field.get('valueNumber') is not None:
-            return float(field['valueNumber'])
+            value = float(field['valueNumber'])
+            # Azure donne le taux d'un récapitulatif de ticket en fraction (0,1 pour 10 %) : aucun taux de TVA n'est
+            # inférieur à 1 %, donc une valeur de 1 ou moins est une fraction.
+            return round(value * 100, 2) if 0 < value <= 1 else value
         match = re.search(r'\d+(?:[.,]\d+)?', field.get('valueString') or field.get('content') or '')
         return float(match.group().replace(',', '.')) if match else None
 

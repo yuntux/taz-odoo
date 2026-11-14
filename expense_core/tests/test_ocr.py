@@ -154,6 +154,15 @@ class TestExpenseOcr(TransactionCase):
         self.assertEqual(receipt.amount_tax, 4.85)
         self.assertFalse(receipt.expense_warning)
 
+    def test_rates_given_as_fractions_by_azure_are_read_as_percent(self):
+        parse = self.env['expense.ocr']._parse_rate
+        self.assertEqual([parse({'valueNumber': v}) for v in (0.1, 0.2, 0.055, 0.021, 10.0, 20.0, 0.0)],
+                         [10.0, 20.0, 5.5, 2.1, 10.0, 20.0, 0.0])
+        receipt = self._read(azure_response(
+            45.0, 4.85, items=[('Plat', 25.0), ('Dessert', 10.0), ('Livre', 10.0)],
+            details=[(0.1, 31.82, 3.18), (0.2, 8.33, 1.67)]))
+        self.assertEqual(sorted(receipt.invoice_line_ids.mapped('tax_ids.amount')), [10.0, 20.0])
+
     def test_a_vat_recap_not_matching_the_total_is_ignored(self):
         receipt = self._read(azure_response(
             45.0, 4.85, items=[('Plat', 45.0)], details=[(10.0, 20.0, 2.0), (20.0, 8.33, 1.67)]))

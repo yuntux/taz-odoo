@@ -78,3 +78,18 @@ class TestReceiptCapture(TransactionCase):
         })
         with self.assertRaises(UserError):
             self._call(_png_b64(), user=stranger)
+
+    def test_reading_fills_a_receipt_created_without_any_line(self):
+        """Le reçu créé par la photo n'a pas de ligne : la lecture doit en créer, comme sur le formulaire classique."""
+        move = self.env['account.move'].browse(self._call(_png_b64())['res_id'])
+        self.assertFalse(move.invoice_line_ids)
+        move._apply_ocr_result({
+            'merchant': 'BISTROT DES DUCS', 'date': '2026-11-13', 'total': 94.7, 'tax_total': None, 'currency': 'EUR',
+            'lines': [{'name': 'MENU', 'amount': 94.7, 'tax_rate': None}],
+            'tax_details': [{'rate': 0.1, 'net': 72.45, 'tax': 7.25}, {'rate': 0.2, 'net': 12.5, 'tax': 2.5}],
+            'confidence': 0.98,
+        })
+        lines = move.invoice_line_ids.filtered(lambda l: l.display_type == 'product')
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(str(move.invoice_date), '2026-11-13')
+        self.assertAlmostEqual(sum(lines.mapped('price_unit')), 94.7, places=1)

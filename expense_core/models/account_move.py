@@ -520,6 +520,10 @@ class AccountMove(models.Model):
                 self.expense_merchant_id = partners
         total = data.get('total')
         notes = []
+        if total and not self.invoice_line_ids:
+            # Un reçu créé sans passer par le formulaire (écran « Photographier un ticket ») n'a pas la ligne vide que
+            # le formulaire ajoute : elle est posée ici, pour que la lecture la remplisse.
+            self.write({'invoice_line_ids': [Command.create({'name': merchant or '/', 'quantity': 1, 'price_unit': 0})]})
         template = self.invoice_line_ids[:1]
         if total and len(self.invoice_line_ids) == 1 and not template.price_unit and not template.tax_ids:
             notes = self._ocr_fill_lines(data, template)
