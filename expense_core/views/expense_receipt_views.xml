@@ -68,9 +68,9 @@
                             <field name="currency_id" column_invisible="True"/>
                         </list>
                     </field>
-                    <group class="oe_subtotal_footer">
-                        <field name="amount_tax" string="dont TVA"/>
-                        <field name="amount_total" string="Total TTC"/>
+                    <!-- Le montant TTC du ticket : c'est ce que le salarié se fait rembourser. -->
+                    <group>
+                        <field name="amount_total" string="Montant à rembourser"/>
                     </group>
                     <!-- Sans chatter, le salarié lit ici la réponse des valideurs (le motif d'un refus). -->
                     <field name="review_ids" widget="tier_validation" invisible="not review_ids" readonly="1">
