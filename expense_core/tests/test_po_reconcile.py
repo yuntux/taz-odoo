@@ -14,6 +14,9 @@ class TestPurchaseOrderReconcile(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.env = cls.env(context=dict(cls.env.context, tracking_disable=True))
+        # Ces tests comptabilisent des pièces sans passer par le bon à payer (livré actif), qui a ses propres tests.
+        (cls.env.ref('expense_core.tier_definition_bap_office')
+         | cls.env.ref('expense_core.tier_definition_bap_director')).write({'active': False})
         cls.company = cls.env.company
         cls.employee = cls.env['hr.employee'].create({'name': 'Salarié BC test'})
         cls.project = cls.env['project.project'].search(

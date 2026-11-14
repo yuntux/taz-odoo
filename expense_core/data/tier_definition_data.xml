@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <odoo noupdate="1">
 
-    <!-- Niveaux du bon à payer, livrés inactifs : les activer met le circuit en service.
+    <!-- Niveaux du bon à payer, livrés actifs (noupdate : une base déjà installée garde son réglage ; pour mettre
+         le circuit hors service, désactiver ces deux niveaux).
          Attention : base_tier_validation crée les revues par séquence DÉCROISSANTE, le niveau au numéro
          le plus élevé est donc validé en premier (Office : 20, puis directeur de mission : 10). -->
     <record id="tier_definition_bap_office" model="tier.definition">
@@ -16,7 +17,7 @@
         <field name="comment_approve_default">Bon pour paiement</field>
         <field name="notify_on_pending" eval="True"/>
         <field name="notify_on_rejected" eval="True"/>
-        <field name="active" eval="False"/>
+        <field name="active" eval="True"/>
     </record>
 
     <!-- Une pièce sans projet (donc sans directeur de mission) n'a que la première validation. -->
@@ -32,7 +33,7 @@
         <field name="comment_approve_default">Bon pour paiement</field>
         <field name="notify_on_pending" eval="True"/>
         <field name="notify_on_rejected" eval="True"/>
-        <field name="active" eval="False"/>
+        <field name="active" eval="True"/>
     </record>
 
 </odoo>

@@ -29,6 +29,9 @@ class TestQontoExpense(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.env = cls.env(context=dict(cls.env.context, tracking_disable=True))
+        # Ces tests comptabilisent des pièces sans passer par le bon à payer (livré actif), qui a ses propres tests.
+        (cls.env.ref('expense_core.tier_definition_bap_office')
+         | cls.env.ref('expense_core.tier_definition_bap_director')).write({'active': False})
         cls.company = cls.env.company
         cls.journal = cls.env['account.journal'].create({
             'name': 'Qonto test', 'code': 'QNT', 'type': 'bank', 'statement_import_api_account_identifier': BANK_ACCOUNT})

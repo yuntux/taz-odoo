@@ -50,12 +50,14 @@ class TestExpenseApproval(TransactionCase):
             {'comment': 'commentaire'})
         wizard.add_comment()
 
-    def test_tiers_are_shipped_inactive(self):
-        self.assertFalse(self.office_def.active)
-        self.assertFalse(self.director_def.active)
+    def test_tiers_are_shipped_active(self):
+        """Le circuit du bon à payer est en service dès l'installation (data/tier_definition_data.xml)."""
+        self.assertTrue(self.office_def.active)
+        self.assertTrue(self.director_def.active)
         move = self._bill()
-        move.action_post()
-        self.assertEqual(move.state, 'posted')
+        with self.assertRaises(ValidationError):
+            move.action_post()
+        self.assertEqual(move.state, 'draft')
 
     def test_cannot_post_before_approval(self):
         self._activate()
