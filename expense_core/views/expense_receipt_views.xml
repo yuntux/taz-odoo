@@ -2,7 +2,7 @@
 <odoo>
 
     <!-- Écran de saisie simplifié d'un reçu de dépense, pensé pour le téléphone : la photo vient de l'écran
-         « Photographier un ticket », « Lire le justificatif » préremplit la date et les lignes, le salarié choisit son
+         « Photographier un ticket » et la lecture OCR automatique préremplit la date et les lignes, le salarié choisit son
          projet, écrit son commentaire et envoie la dépense en validation. Ni lignes ni chatter sur cet écran. -->
     <record id="view_expense_receipt_form" model="ir.ui.view">
         <field name="name">account.move.form.expense.receipt</field>
@@ -28,9 +28,6 @@
                     </div>
                     <div class="alert alert-danger mb-0" role="alert" invisible="validation_status != 'rejected'">
                         Dépense refusée : voir le motif ci-dessous, corrigez puis renvoyez-la.
-                    </div>
-                    <div class="mb-2" invisible="state != 'draft' or validation_status != 'no'">
-                        <button name="action_run_ocr" string="Lire le justificatif" type="object" class="btn btn-secondary"/>
                     </div>
                     <group>
                         <field name="move_type" invisible="1"/>
