@@ -8,6 +8,7 @@ from odoo.exceptions import UserError
 _logger = logging.getLogger(__name__)
 
 BASE_URL = "https://thirdparty.qonto.com/v2/"
+SANDBOX_URL = "https://thirdparty-sandbox.staging.qonto.co/v2/"
 TIMEOUT = 20
 
 
@@ -21,13 +22,12 @@ class QontoApi(models.AbstractModel):
         company = company.sudo()
         if not (company.statement_import_api_login and company.statement_import_api_password):
             raise UserError(_("Les identifiants de l'API Qonto ne sont pas renseignés sur la société %s.", company.name))
-        # Bac à sable Qonto : paramètres système expense_qonto.base_url (https://thirdparty-sandbox.staging.qonto.co/v2/)
-        # et expense_qonto.staging_token (en-tête X-Qonto-Staging-Token). Sans eux, c'est la production.
-        params_sys = self.env['ir.config_parameter'].sudo()
+        # L'environnement est un réglage de la société : le bac à sable appelle l'API de test avec le jeton de staging.
         headers = {'Authorization': '%s:%s' % (company.statement_import_api_login, company.statement_import_api_password)}
-        if params_sys.get_param('expense_qonto.staging_token'):
-            headers['X-Qonto-Staging-Token'] = params_sys.get_param('expense_qonto.staging_token')
-        base_url = params_sys.get_param('expense_qonto.base_url') or BASE_URL
+        base_url = BASE_URL
+        if company.qonto_environment == 'sandbox':
+            base_url = SANDBOX_URL
+            headers['X-Qonto-Staging-Token'] = company.qonto_staging_token or ''
         response = requests.request(
             method, base_url.rstrip('/') + '/' + path, params=params or {}, json=payload, timeout=TIMEOUT, headers=headers)
         if response.status_code not in ok:

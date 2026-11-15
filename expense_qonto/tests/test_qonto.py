@@ -4,7 +4,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from odoo import Command
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 from odoo.tests.common import HttpCase, TransactionCase, tagged
 
 from ..controllers.main import QontoWebhook
@@ -283,12 +283,25 @@ class TestQontoWebhookRegistration(TransactionCase):
         self.assertEqual(action['tag'], 'reload')
         self.assertEqual(self.company.qonto_webhook_subscription_id, 'sub-2')
 
-    def test_sandbox_url_and_staging_token_come_from_system_parameters(self):
-        params = self.env['ir.config_parameter'].sudo()
-        params.set_param('expense_qonto.base_url', 'https://thirdparty-sandbox.staging.qonto.co/v2/')
-        params.set_param('expense_qonto.staging_token', 'tok')
+    def test_production_is_the_default_and_sends_no_staging_token(self):
+        self.assertEqual(self.company.qonto_environment, 'production')
+        with patch('odoo.addons.expense_qonto.models.qonto_api.requests.request',
+                   return_value=self._response(201, {'id': 'sub-3'})) as request:
+            self.company.action_qonto_register_webhook()
+        self.assertEqual(request.call_args[0][1], 'https://thirdparty.qonto.com/v2/webhook_subscriptions')
+        self.assertNotIn('X-Qonto-Staging-Token', request.call_args[1]['headers'])
+
+    def test_sandbox_uses_the_sandbox_url_and_the_staging_token_of_the_company(self):
+        self.company.write({'qonto_environment': 'sandbox', 'qonto_staging_token': 'tok'})
         with patch('odoo.addons.expense_qonto.models.qonto_api.requests.request',
                    return_value=self._response(201, {'id': 'sub-3'})) as request:
             self.company.action_qonto_register_webhook()
         self.assertEqual(request.call_args[0][1], 'https://thirdparty-sandbox.staging.qonto.co/v2/webhook_subscriptions')
         self.assertEqual(request.call_args[1]['headers']['X-Qonto-Staging-Token'], 'tok')
+
+    def test_sandbox_requires_the_staging_token(self):
+        with self.assertRaises(ValidationError):
+            self.company.write({'qonto_environment': 'sandbox', 'qonto_staging_token': False})
+
+    def test_the_webhook_secret_is_read_only_in_the_settings(self):
+        self.assertTrue(self.env['res.config.settings']._fields['qonto_webhook_secret'].readonly)

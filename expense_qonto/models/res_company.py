@@ -1,7 +1,7 @@
 import secrets
 
-from odoo import _, fields, models
-from odoo.exceptions import UserError
+from odoo import _, api, fields, models
+from odoo.exceptions import UserError, ValidationError
 
 
 class ResCompany(models.Model):
@@ -13,6 +13,15 @@ class ResCompany(models.Model):
         help="Identifiant de l'organisation (Qonto > Intégrations et partenariats > Clés API).")
     statement_import_api_password = fields.Char(
         string="Qonto : clé secrète", groups='base.group_system', copy=False)
+    qonto_environment = fields.Selection(
+        [('production', "Environnement de production"), ('sandbox', "Environnement bac à sable")],
+        string="Qonto : environnement", default='production', required=True, groups='base.group_system',
+        help="Le bac à sable appelle l'API de test de Qonto (thirdparty-sandbox.staging.qonto.co), avec le jeton de "
+             "staging, au lieu de la production.")
+    qonto_staging_token = fields.Char(
+        string="Qonto : jeton de staging", groups='base.group_system', copy=False,
+        help="Jeton personnel du portail développeur de Qonto, envoyé dans l'en-tête X-Qonto-Staging-Token. "
+             "Obligatoire dans l'environnement bac à sable.")
     qonto_webhook_secret = fields.Char(
         string="Qonto : secret du webhook", groups='base.group_system', copy=False,
         help="Secret du webhook, qui sert à vérifier la signature des appels de Qonto.")
@@ -27,6 +36,12 @@ class ResCompany(models.Model):
     qonto_webhook_subscription_id = fields.Char(
         string="Qonto : abonnement au webhook", groups='base.group_system', copy=False, readonly=True,
         help="Identifiant de l'abonnement créé chez Qonto par le bouton « Inscrire le webhook ».")
+
+    @api.constrains('qonto_environment', 'qonto_staging_token')
+    def _check_qonto_staging_token(self):
+        for company in self.sudo():
+            if company.qonto_environment == 'sandbox' and not company.qonto_staging_token:
+                raise ValidationError(_("Le jeton de staging est obligatoire dans l'environnement bac à sable de Qonto."))
 
     def _qonto_webhook_url(self):
         self.ensure_one()

@@ -10,9 +10,13 @@
                     <setting id="expense_qonto" string="API et webhook Qonto"
                              help="Identifiant et clé secrète de l'API (Intégrations et partenariats > Clés API), secret du webhook. Les clés ne sont lisibles que des administrateurs.">
                         <div class="content-group">
-                            <div class="row mt8"><label for="statement_import_api_login" class="col-lg-4"/><field name="statement_import_api_login"/></div>
+                            <div class="row mt8"><label for="qonto_environment" class="col-lg-4"/><field name="qonto_environment" widget="radio"/></div>
+                            <div class="row" invisible="qonto_environment != 'sandbox'">
+                                <label for="qonto_staging_token" class="col-lg-4"/>
+                                <field name="qonto_staging_token" password="True" required="qonto_environment == 'sandbox'"/>
+                            </div>
+                            <div class="row"><label for="statement_import_api_login" class="col-lg-4"/><field name="statement_import_api_login"/></div>
                             <div class="row"><label for="statement_import_api_password" class="col-lg-4"/><field name="statement_import_api_password" password="True"/></div>
-                            <div class="row"><label for="qonto_webhook_secret" class="col-lg-4"/><field name="qonto_webhook_secret" password="True"/></div>
                             <div class="row"><label for="qonto_default_partner_id" class="col-lg-4"/><field name="qonto_default_partner_id"/></div>
                             <div class="row mt8" invisible="qonto_webhook_subscription_id">
                                 <div class="col-lg-4"/>
@@ -23,6 +27,9 @@
                                 <label for="qonto_webhook_subscription_id" class="col-lg-4"/><field name="qonto_webhook_subscription_id"/>
                                 <button name="action_qonto_unregister_webhook" type="object" string="Supprimer le webhook"
                                         confirm="Supprimer l'abonnement chez Qonto ? Les transactions ne seront plus reçues que par la lecture planifiée."/>
+                            </div>
+                            <div class="row mt8" invisible="not qonto_webhook_secret">
+                                <label for="qonto_webhook_secret" class="col-lg-4"/><field name="qonto_webhook_secret" password="True" readonly="1"/>
                             </div>
                             <div class="row"><label for="qonto_reminder_days" class="col-lg-4"/><field name="qonto_reminder_days"/></div>
                         </div>

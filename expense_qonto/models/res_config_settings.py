@@ -8,7 +8,12 @@ class ResConfigSettings(models.TransientModel):
                                              groups='base.group_system')
     statement_import_api_password = fields.Char(related='company_id.statement_import_api_password', readonly=False,
                                                 groups='base.group_system')
-    qonto_webhook_secret = fields.Char(related='company_id.qonto_webhook_secret', readonly=False,
+    qonto_environment = fields.Selection(related='company_id.qonto_environment', readonly=False,
+                                         groups='base.group_system')
+    qonto_staging_token = fields.Char(related='company_id.qonto_staging_token', readonly=False,
+                                      groups='base.group_system')
+    # Généré par le bouton « Inscrire le webhook » : jamais saisi à la main.
+    qonto_webhook_secret = fields.Char(related='company_id.qonto_webhook_secret', readonly=True,
                                        groups='base.group_system')
     qonto_default_partner_id = fields.Many2one(related='company_id.qonto_default_partner_id', readonly=False)
     qonto_reminder_days = fields.Integer(related='company_id.qonto_reminder_days', readonly=False)
