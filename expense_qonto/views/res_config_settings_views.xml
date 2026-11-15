@@ -25,6 +25,7 @@
                             <div class="row" invisible="qonto_auth_mode != 'oauth'"><label for="qonto_oauth_client_id" class="col-lg-4"/><field name="qonto_oauth_client_id"/></div>
                             <div class="row" invisible="qonto_auth_mode != 'oauth'"><label for="qonto_oauth_client_secret" class="col-lg-4"/><field name="qonto_oauth_client_secret" password="True"/></div>
                             <div class="row" invisible="qonto_auth_mode != 'oauth'"><label for="qonto_oauth_scope_ids" class="col-lg-4"/><field name="qonto_oauth_scope_ids" widget="many2many_tags" options="{'no_create': True}"/></div>
+                            <div class="row" invisible="qonto_auth_mode != 'oauth'"><label for="qonto_oauth_redirect_custom" class="col-lg-4"/><field name="qonto_oauth_redirect_custom" placeholder="Laisser vide pour l'adresse proposée ci-dessous"/></div>
                             <div class="row" invisible="qonto_auth_mode != 'oauth'"><label for="qonto_oauth_redirect_uri" class="col-lg-4"/><field name="qonto_oauth_redirect_uri" readonly="1"/></div>
                             <div class="row mt8" invisible="qonto_auth_mode != 'oauth'">
                                 <div class="col-lg-4"/>
@@ -36,6 +37,13 @@
                                             invisible="not qonto_oauth_connected_on"
                                             confirm="Oublier les jetons de Qonto ? Il faudra se reconnecter."/>
                                 </div>
+                            </div>
+                            <!-- Si Qonto ramène le navigateur ailleurs que sur ce serveur : coller ici l'adresse de retour. -->
+                            <div class="row" invisible="qonto_auth_mode != 'oauth' or qonto_oauth_connected_on">
+                                <label for="qonto_oauth_return_url" class="col-lg-4"/>
+                                <field name="qonto_oauth_return_url" placeholder="https://…?code=…&amp;state=… (ou le code seul)"/>
+                                <button name="action_qonto_oauth_finish_pasted" type="object" string="Finaliser la connexion"
+                                        invisible="not qonto_oauth_return_url"/>
                             </div>
                             <div class="row" invisible="qonto_auth_mode != 'oauth' or not qonto_oauth_connected_on">
                                 <label for="qonto_oauth_connected_on" class="col-lg-4"/><field name="qonto_oauth_connected_on"/>

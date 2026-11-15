@@ -1,6 +1,7 @@
 import hmac
 import secrets
 from datetime import timedelta
+from urllib.parse import parse_qs, urlparse
 
 from odoo import _, fields, models
 from odoo.exceptions import UserError
@@ -41,8 +42,14 @@ class ResCompany(models.Model):
         help="Droits demandés à Qonto à la connexion. Les étendues doivent aussi être activées sur l'application OAuth "
              "du portail développeur. Par défaut : webhooks, lecture des transactions et des cartes ; offline_access "
              "(jeton de renouvellement) est toujours ajoutée.")
+    qonto_oauth_redirect_custom = fields.Char(
+        string="Qonto : adresse de redirection enregistrée", groups='base.group_system', copy=False,
+        help="Facultatif : l'adresse de redirection telle qu'elle est enregistrée sur l'application OAuth de Qonto, "
+             "quand elle diffère de l'adresse proposée (autre domaine, par exemple). Elle doit être identique, "
+             "caractère pour caractère. Si Qonto ramène le navigateur ailleurs que sur ce serveur, finissez la "
+             "connexion en collant l'adresse de retour.")
     qonto_oauth_redirect_uri = fields.Char(
-        string="Qonto : adresse de redirection", compute='_compute_qonto_oauth_redirect_uri',
+        string="Qonto : adresse de redirection utilisée", compute='_compute_qonto_oauth_redirect_uri',
         groups='base.group_system',
         help="À enregistrer telle quelle sur l'application OAuth du portail développeur de Qonto.")
     qonto_oauth_state = fields.Char(groups='base.group_system', copy=False)
@@ -76,7 +83,8 @@ class ResCompany(models.Model):
     def _compute_qonto_oauth_redirect_uri(self):
         base = (self.env['ir.config_parameter'].sudo().get_param('web.base.url') or '').rstrip('/')
         for company in self:
-            company.qonto_oauth_redirect_uri = base + '/expense_qonto/oauth/callback'
+            company.qonto_oauth_redirect_uri = (
+                (company.qonto_oauth_redirect_custom or '').strip() or base + '/expense_qonto/oauth/callback')
 
     def _qonto_oauth_scope_codes(self):
         """Étendues demandées : celles de la société (par défaut webhooks, transactions, cartes), plus offline_access,
@@ -101,6 +109,26 @@ class ResCompany(models.Model):
         self.qonto_oauth_state = state
         url = self.env['qonto.api']._oauth_authorization_url(self, state)
         return {'type': 'ir.actions.act_url', 'url': url, 'target': 'self'}
+
+    def action_qonto_oauth_finish_pasted(self, pasted):
+        """Fin de la connexion quand Qonto a ramené le navigateur ailleurs que sur ce serveur : l'administrateur colle
+        l'adresse de retour (avec code= et state=) ou seulement le code. Sans état dans ce qu'il colle, la connexion
+        doit tout de même avoir été lancée d'ici (état en attente) ; avec un état, il doit être le bon."""
+        self.ensure_one()
+        self = self.sudo()
+        pasted = (pasted or '').strip()
+        if not pasted:
+            raise UserError(_("Collez l'adresse de retour de Qonto (ou son code)."))
+        # Soit l'adresse entière (…?code=…&state=…), soit « code=…&state=… », soit le code seul.
+        raw = urlparse(pasted).query if pasted.startswith('http') else pasted.split('?', 1)[-1]
+        query = parse_qs(raw) if '=' in raw else {}
+        code = (query.get('code') or [''])[0] if query or pasted.startswith('http') else pasted
+        state = (query.get('state') or [self.qonto_oauth_state])[0]
+        if not code:
+            raise UserError(_("Je ne trouve pas le code (code=…) dans ce qui a été collé."))
+        if not self.qonto_oauth_state:
+            raise UserError(_("Aucune connexion n'est en cours : cliquez d'abord sur « Se connecter à Qonto »."))
+        return self._qonto_oauth_finish(code, state)
 
     def _qonto_oauth_finish(self, code, state):
         """Fin de la connexion : vérifie l'état puis échange le code contre les jetons, qui sont gardés."""

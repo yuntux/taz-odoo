@@ -473,3 +473,50 @@ class TestQontoOauth(TransactionCase):
         settings.execute()
         self.assertEqual(self.company.qonto_oauth_client_id, 'c-ecran')
         self.assertTrue(settings.qonto_oauth_redirect_uri.endswith('/expense_qonto/oauth/callback'))
+
+    def test_a_registered_redirect_address_replaces_the_proposed_one_everywhere(self):
+        registered = 'https://autre-domaine.example.com/qonto/retour'
+        self.company.qonto_oauth_redirect_custom = registered
+        self.assertEqual(self.company.qonto_oauth_redirect_uri, registered)
+        query = parse_qs(urlparse(self.company.action_qonto_oauth_connect()['url']).query)
+        self.assertEqual(query['redirect_uri'], [registered])
+        with patch(self.REQUESTS + '.post', return_value=self._tokens()) as post:
+            self.company._qonto_oauth_finish('le-code', self.company.qonto_oauth_state)
+        self.assertEqual(post.call_args[1]['data']['redirect_uri'], registered)
+
+    def test_the_pasted_return_address_finishes_the_connection(self):
+        self.company.action_qonto_oauth_connect()
+        state = self.company.qonto_oauth_state
+        with patch(self.REQUESTS + '.post', return_value=self._tokens()) as post:
+            self.company.action_qonto_oauth_finish_pasted(
+                'http://localhost:3000/callback?code=le-code&state=%s' % state)
+        self.assertEqual(post.call_args[1]['data']['code'], 'le-code')
+        self.assertEqual(self.company.qonto_refresh_token, 'renouv-1')
+
+    def test_the_pasted_code_alone_or_code_and_state_work_when_a_connection_is_pending(self):
+        for pasted in ('le-code', 'code=le-code'):
+            self.company.action_qonto_oauth_connect()
+            with patch(self.REQUESTS + '.post', return_value=self._tokens()) as post:
+                self.company.action_qonto_oauth_finish_pasted(pasted)
+            self.assertEqual(post.call_args[1]['data']['code'], 'le-code', pasted)
+
+    def test_a_pasted_address_with_another_state_or_without_a_pending_connection_is_refused(self):
+        with patch(self.REQUESTS + '.post') as post:
+            with self.assertRaises(UserError):  # aucune connexion en cours
+                self.company.action_qonto_oauth_finish_pasted('le-code')
+            self.company.action_qonto_oauth_connect()
+            with self.assertRaises(UserError):  # état d'une autre connexion
+                self.company.action_qonto_oauth_finish_pasted('https://x.example.com/?code=c&state=autre')
+            with self.assertRaises(UserError):  # rien de lisible
+                self.company.action_qonto_oauth_finish_pasted('   ')
+            with self.assertRaises(UserError):  # une adresse sans code
+                self.company.action_qonto_oauth_finish_pasted('https://x.example.com/?error=access_denied')
+        post.assert_not_called()
+
+    def test_the_settings_button_finishes_with_the_pasted_address(self):
+        self.company.action_qonto_oauth_connect()
+        settings = self.env['res.config.settings'].create({'qonto_oauth_return_url': 'le-code'})
+        with patch(self.REQUESTS + '.post', return_value=self._tokens()):
+            action = settings.action_qonto_oauth_finish_pasted()
+        self.assertEqual(action['tag'], 'reload')
+        self.assertEqual(self.company.qonto_access_token, 'acces-1')

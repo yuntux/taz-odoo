@@ -19,8 +19,12 @@ class ResConfigSettings(models.TransientModel):
                                             groups='base.group_system')
     qonto_oauth_scope_ids = fields.Many2many(related='company_id.qonto_oauth_scope_ids', readonly=False,
                                              groups='base.group_system')
+    qonto_oauth_redirect_custom = fields.Char(related='company_id.qonto_oauth_redirect_custom', readonly=False,
+                                              groups='base.group_system')
     qonto_oauth_redirect_uri = fields.Char(related='company_id.qonto_oauth_redirect_uri', readonly=True,
                                            groups='base.group_system')
+    # Adresse de retour de Qonto collée par l'administrateur (jamais gardée) quand le navigateur n'est pas revenu ici.
+    qonto_oauth_return_url = fields.Char(string="Adresse de retour de Qonto", groups='base.group_system')
     qonto_oauth_connected_on = fields.Datetime(related='company_id.qonto_oauth_connected_on', readonly=True,
                                                groups='base.group_system')
     # Généré par le bouton « Inscrire le webhook » : jamais saisi à la main.
@@ -34,6 +38,11 @@ class ResConfigSettings(models.TransientModel):
     def action_qonto_oauth_connect(self):
         self.ensure_one()
         return self.company_id.action_qonto_oauth_connect()
+
+    def action_qonto_oauth_finish_pasted(self):
+        self.ensure_one()
+        self.company_id.action_qonto_oauth_finish_pasted(self.qonto_oauth_return_url)
+        return {'type': 'ir.actions.client', 'tag': 'reload'}
 
     def action_qonto_oauth_disconnect(self):
         self.ensure_one()
