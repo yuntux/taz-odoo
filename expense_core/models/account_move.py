@@ -68,8 +68,9 @@ class AccountMove(models.Model):
     )
     allowed_project_ids = fields.Many2many(
         'project.project', string="Projets autorisés", compute='_compute_allowed_project_ids',
-        help="Projets sur lesquels le salarié peut imputer ses frais : ceux où il est staffé à la date de la dépense "
-             "et ceux dont il est directeur de mission.")
+        help="Projets sur lesquels les frais peuvent être imputés, pour tout le monde (l'Office compris) : ceux où "
+             "celui qui dépense est staffé à la date de la dépense et ceux dont il est directeur de mission, sauf les "
+             "projets clos, annulés ou perdus.")
     ocr_result_ids = fields.One2many('expense.ocr.result', 'move_id', string="Lectures OCR", readonly=True)
     expense_warning = fields.Text(
         compute='_compute_expense_warning',
@@ -300,14 +301,14 @@ class AccountMove(models.Model):
         project_accounting refuse toute écriture liée à un projet dont le tiers n'est ni le client ni un fournisseur
         de l'onglet Achats. Le lien est créé au choix du projet : pour un reçu, c'est le salarié remboursé ; pour une
         dépense par carte, c'est le vrai fournisseur (le commerçant), pas le porteur de la carte. Il est créé avec les
-        droits système, mais seulement pour un projet que celui qui dépense a le droit de choisir (staffé ou
-        directeur de mission), ou pour l'Office : sinon la contrainte reste en vigueur.
+        droits système, mais seulement pour un projet autorisé (allowed_project_ids), pour tout le monde, l'Office
+        compris : sinon la contrainte reste en vigueur.
         """
         self.ensure_one()
         partner = partner or self._get_expense_link_partner()
         if not partner:
             return
-        if check_rights and project not in self.allowed_project_ids and not self.env.user.has_group(OFFICE_GROUP):
+        if check_rights and project not in self.allowed_project_ids:
             return
         Link = self.env['project.outsourcing.link'].sudo()
         if not Link.search_count([('project_id', '=', project.id), ('partner_id', '=', partner.id)]):
@@ -351,17 +352,15 @@ class AccountMove(models.Model):
                 '|', ('end_date', '=', False), ('end_date', '>=', day),
             ])
             directed = Project.search([('user_id', '=', employee.user_id.id)]) if employee.user_id else Project
+            # Un projet clos, annulé ou perdu (étape à l'état « closed ») n'accepte plus de dépense.
             move.allowed_project_ids = (needs.project_id | directed).filtered(
-                lambda project: not project.company_id or project.company_id == move.company_id)
+                lambda project: (not project.company_id or project.company_id == move.company_id)
+                and project.stage_id.state != 'closed')
 
     def _check_expense_staffing(self):
-        """Un salarié n'impute ses frais qu'aux projets sur lesquels il est staffé à la date de la dépense, ou dont il
-        est le directeur de mission.
-
-        L'Office (TAZ-ADV) peut corriger l'imputation d'une pièce sans cette limite.
-        """
-        if self.env.user.has_group(OFFICE_GROUP):
-            return
+        """Une dépense n'est imputée qu'aux projets autorisés (allowed_project_ids) : ceux où celui qui dépense est staffé
+        à la date de la dépense, ou dont il est directeur de mission, et qui ne sont pas clos. La règle vaut pour tout le
+        monde, l'Office compris : la liste du formulaire est la même pour tous."""
         for move in self.filtered(lambda m: m.expense_origin in EXPENSE_ORIGINS and m._get_expense_spender()):
             outside = move.line_ids.rel_project_ids - move.allowed_project_ids
             if outside:

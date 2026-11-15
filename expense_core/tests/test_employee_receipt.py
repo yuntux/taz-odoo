@@ -187,14 +187,38 @@ class TestEmployeeReceipt(TransactionCase):
         receipt.expense_project_id = self.other
         receipt.with_user(self.user)._check_expense_staffing()
 
-    def test_project_outside_the_staffing_is_refused_except_for_the_office(self):
+    def test_project_outside_the_staffing_is_refused_to_everyone_including_the_office(self):
         receipt = self._receipt()
         receipt.expense_project_id = self.other
         with self.assertRaises(ValidationError):
             receipt.with_user(self.user)._check_expense_staffing()
-        receipt.with_user(self.office)._check_expense_staffing()  # l'Office peut corriger l'imputation
+        with self.assertRaises(ValidationError):  # la liste du formulaire est la même pour l'Office
+            receipt.with_user(self.office)._check_expense_staffing()
         receipt.expense_project_id = self.staffed
         receipt.with_user(self.user)._check_expense_staffing()
+        receipt.with_user(self.office)._check_expense_staffing()
+
+    def test_a_closed_project_is_not_offered_and_is_refused(self):
+        """Un projet dont l'étape est à l'état « closed » (clos, annulé, perdu) n'accepte plus de dépense, même staffé."""
+        receipt = self._receipt()
+        receipt.expense_project_id = self.staffed
+        self.assertIn(self.staffed, receipt.allowed_project_ids)
+        closed = self.env['project.project.stage'].create({'name': 'Clos (test)', 'state': 'closed'})
+        # écrit en SQL : le passage à « closed » déclenche des traitements de clôture propres à project_accounting
+        self.env.flush_all()
+        self.env.cr.execute("UPDATE project_project SET stage_id = %s WHERE id = %s", (closed.id, self.staffed.id))
+        self.env.invalidate_all()
+        self.assertEqual(self.staffed.stage_id.state, 'closed')
+        self.assertNotIn(self.staffed, receipt.allowed_project_ids)
+        with self.assertRaises(ValidationError):
+            receipt.with_user(self.user)._check_expense_staffing()
+        with self.assertRaises(ValidationError):
+            receipt.with_user(self.office)._check_expense_staffing()
+        # un projet encore ouvert, lui, reste proposé
+        launched = self.env['project.project.stage'].create({'name': 'Lancé (test)', 'state': 'launched'})
+        self.env.cr.execute("UPDATE project_project SET stage_id = %s WHERE id = %s", (launched.id, self.staffed.id))
+        self.env.invalidate_all()
+        self.assertIn(self.staffed, receipt.allowed_project_ids)
 
     def test_weekly_reimbursement_order(self):
         qonto = self.env['res.partner.bank'].create({
