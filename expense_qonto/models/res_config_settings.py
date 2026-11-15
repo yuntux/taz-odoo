@@ -12,6 +12,17 @@ class ResConfigSettings(models.TransientModel):
                                          groups='base.group_system')
     qonto_staging_token = fields.Char(related='company_id.qonto_staging_token', readonly=False,
                                       groups='base.group_system')
+    qonto_auth_mode = fields.Selection(related='company_id.qonto_auth_mode', readonly=False, groups='base.group_system')
+    qonto_oauth_client_id = fields.Char(related='company_id.qonto_oauth_client_id', readonly=False,
+                                        groups='base.group_system')
+    qonto_oauth_client_secret = fields.Char(related='company_id.qonto_oauth_client_secret', readonly=False,
+                                            groups='base.group_system')
+    qonto_oauth_scope_ids = fields.Many2many(related='company_id.qonto_oauth_scope_ids', readonly=False,
+                                             groups='base.group_system')
+    qonto_oauth_redirect_uri = fields.Char(related='company_id.qonto_oauth_redirect_uri', readonly=True,
+                                           groups='base.group_system')
+    qonto_oauth_connected_on = fields.Datetime(related='company_id.qonto_oauth_connected_on', readonly=True,
+                                               groups='base.group_system')
     # Généré par le bouton « Inscrire le webhook » : jamais saisi à la main.
     qonto_webhook_secret = fields.Char(related='company_id.qonto_webhook_secret', readonly=True,
                                        groups='base.group_system')
@@ -19,6 +30,15 @@ class ResConfigSettings(models.TransientModel):
     qonto_reminder_days = fields.Integer(related='company_id.qonto_reminder_days', readonly=False)
     qonto_webhook_subscription_id = fields.Char(related='company_id.qonto_webhook_subscription_id',
                                                 groups='base.group_system')
+
+    def action_qonto_oauth_connect(self):
+        self.ensure_one()
+        return self.company_id.action_qonto_oauth_connect()
+
+    def action_qonto_oauth_disconnect(self):
+        self.ensure_one()
+        self.company_id.action_qonto_oauth_disconnect()
+        return {'type': 'ir.actions.client', 'tag': 'reload'}
 
     def action_qonto_register_webhook(self):
         self.ensure_one()

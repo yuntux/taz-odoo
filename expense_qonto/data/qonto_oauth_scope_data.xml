@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo>
+    <!-- Étendues OAuth 2.0 proposées à la connexion (liste complète : docs.qonto.com, « Available scopes »). -->
+    <record id="qonto_scope_offline_access" model="qonto.oauth.scope">
+        <field name="code">offline_access</field>
+        <field name="description">Obtenir un jeton de renouvellement : sans lui, il faudrait se reconnecter toutes les heures (toujours demandée)</field>
+    </record>
+    <record id="qonto_scope_webhook" model="qonto.oauth.scope">
+        <field name="code">webhook</field>
+        <field name="description">Gérer les abonnements de webhook (inscrire ou supprimer le webhook)</field>
+    </record>
+    <record id="qonto_scope_organization_read" model="qonto.oauth.scope">
+        <field name="code">organization.read</field>
+        <field name="description">Lire les transactions, les comptes et les pièces jointes (étendue sensible)</field>
+    </record>
+    <record id="qonto_scope_card_read" model="qonto.oauth.scope">
+        <field name="code">card.read</field>
+        <field name="description">Lire les cartes</field>
+    </record>
+    <record id="qonto_scope_attachment_write" model="qonto.oauth.scope">
+        <field name="code">attachment.write</field>
+        <field name="description">Ajouter un justificatif à une transaction</field>
+    </record>
+    <record id="qonto_scope_membership_read" model="qonto.oauth.scope">
+        <field name="code">membership.read</field>
+        <field name="description">Lire le membre connecté</field>
+    </record>
+
+    <!-- Étendues par défaut de la société principale (noupdate : une mise à jour ne défait pas le choix fait ensuite). -->
+    <data noupdate="1">
+        <record id="base.main_company" model="res.company">
+            <field name="qonto_oauth_scope_ids" eval="[(6, 0, [ref('qonto_scope_offline_access'), ref('qonto_scope_webhook'), ref('qonto_scope_organization_read'), ref('qonto_scope_card_read')])]"/>
+        </record>
+    </data>
+</odoo>

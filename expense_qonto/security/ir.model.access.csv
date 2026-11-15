@@ -1,3 +1,4 @@
 id,name,model_id/id,group_id/id,perm_read,perm_write,perm_create,perm_unlink
 access_account_bank_statement_card_user,access_account_bank_statement_card_user,model_account_bank_statement_card,base.group_user,1,0,0,0
 access_account_bank_statement_card_manager,access_account_bank_statement_card_manager,model_account_bank_statement_card,account.group_account_manager,1,1,1,1
+access_qonto_oauth_scope_system,access_qonto_oauth_scope_system,model_qonto_oauth_scope,base.group_system,1,1,1,1

@@ -42,3 +42,25 @@ class QontoWebhook(http.Controller):
             tx = request.env['qonto.api'].sudo().get_transaction(company, transaction_id)
         request.env['account.move'].sudo()._qonto_create_expense(company, tx)
         return request.make_response('ok', status=200)
+
+    @http.route('/expense_qonto/oauth/callback', type='http', auth='user', methods=['GET'])
+    def oauth_callback(self, code=None, state=None, error=None, **kwargs):
+        """Retour de Qonto après l'autorisation (OAuth 2.0) : réservé à l'administrateur qui a lancé la connexion, dont
+        c'est le navigateur que Qonto ramène ici. Revient ensuite sur l'écran des paramètres."""
+        if not request.env.user.has_group('base.group_system'):
+            return request.make_response('forbidden', status=403)
+        if error or not (code and state):
+            _logger.warning("Qonto OAuth : autorisation refusée ou incomplète (%s).", error)
+            return request.redirect('/odoo/settings')
+        try:
+            company_id = int((state or '').split('-', 1)[0])
+        except ValueError:
+            return request.make_response('invalid state', status=400)
+        company = request.env['res.company'].sudo().browse(company_id).exists()
+        if not company:
+            return request.make_response('invalid state', status=400)
+        try:
+            company._qonto_oauth_finish(code, state)
+        except Exception:  # noqa: BLE001 : le détail est dans le journal, l'écran des paramètres reste atteignable
+            _logger.exception("Qonto OAuth : échange du code impossible pour la société %s.", company.name)
+        return request.redirect('/odoo/settings')

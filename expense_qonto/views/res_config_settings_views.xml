@@ -8,17 +8,43 @@
             <xpath expr="//block[@id='expense_ocr_block']" position="after">
                 <block title="Cartes Qonto" id="expense_qonto_block" groups="base.group_system">
                     <setting id="expense_qonto" string="API et webhook Qonto"
-                             help="Identifiant et clé secrète de l'API (Intégrations et partenariats > Clés API), secret du webhook. Les clés ne sont lisibles que des administrateurs.">
+                             help="Environnement, mode de connexion (OAuth 2.0 ou clé d'API) et webhook. Les identifiants ne sont lisibles que des administrateurs.">
                         <div class="content-group">
                             <div class="row mt8"><label for="qonto_environment" class="col-lg-4"/><field name="qonto_environment" widget="radio"/></div>
                             <div class="row" invisible="qonto_environment != 'sandbox'">
                                 <label for="qonto_staging_token" class="col-lg-4"/>
                                 <field name="qonto_staging_token" password="True" required="qonto_environment == 'sandbox'"/>
                             </div>
-                            <div class="row"><label for="statement_import_api_login" class="col-lg-4"/><field name="statement_import_api_login"/></div>
-                            <div class="row"><label for="statement_import_api_password" class="col-lg-4"/><field name="statement_import_api_password" password="True"/></div>
-                            <div class="row"><label for="qonto_default_partner_id" class="col-lg-4"/><field name="qonto_default_partner_id"/></div>
-                            <div class="row mt8" invisible="qonto_webhook_subscription_id">
+                            <div class="row"><label for="qonto_auth_mode" class="col-lg-4"/><field name="qonto_auth_mode" widget="radio"/></div>
+
+                            <!-- Connexion par clé d'API : lecture des transactions seulement (pas de webhook). -->
+                            <div class="row" invisible="qonto_auth_mode != 'api_key'"><label for="statement_import_api_login" class="col-lg-4"/><field name="statement_import_api_login"/></div>
+                            <div class="row" invisible="qonto_auth_mode != 'api_key'"><label for="statement_import_api_password" class="col-lg-4"/><field name="statement_import_api_password" password="True"/></div>
+
+                            <!-- Connexion OAuth 2.0 : application du portail développeur de Qonto. -->
+                            <div class="row" invisible="qonto_auth_mode != 'oauth'"><label for="qonto_oauth_client_id" class="col-lg-4"/><field name="qonto_oauth_client_id"/></div>
+                            <div class="row" invisible="qonto_auth_mode != 'oauth'"><label for="qonto_oauth_client_secret" class="col-lg-4"/><field name="qonto_oauth_client_secret" password="True"/></div>
+                            <div class="row" invisible="qonto_auth_mode != 'oauth'"><label for="qonto_oauth_scope_ids" class="col-lg-4"/><field name="qonto_oauth_scope_ids" widget="many2many_tags" options="{'no_create': True}"/></div>
+                            <div class="row" invisible="qonto_auth_mode != 'oauth'"><label for="qonto_oauth_redirect_uri" class="col-lg-4"/><field name="qonto_oauth_redirect_uri" readonly="1"/></div>
+                            <div class="row mt8" invisible="qonto_auth_mode != 'oauth'">
+                                <div class="col-lg-4"/>
+                                <div class="col">
+                                    <button name="action_qonto_oauth_connect" type="object" class="btn-primary"
+                                            string="Se connecter à Qonto"
+                                            confirm="Ouvrir la page d'autorisation de Qonto ? Les réglages saisis ci-dessus sont enregistrés d'abord."/>
+                                    <button name="action_qonto_oauth_disconnect" type="object" string="Se déconnecter"
+                                            invisible="not qonto_oauth_connected_on"
+                                            confirm="Oublier les jetons de Qonto ? Il faudra se reconnecter."/>
+                                </div>
+                            </div>
+                            <div class="row" invisible="qonto_auth_mode != 'oauth' or not qonto_oauth_connected_on">
+                                <label for="qonto_oauth_connected_on" class="col-lg-4"/><field name="qonto_oauth_connected_on"/>
+                            </div>
+
+                            <div class="row mt8"><label for="qonto_default_partner_id" class="col-lg-4"/><field name="qonto_default_partner_id"/></div>
+
+                            <!-- Webhook : n'existe qu'en OAuth 2.0 (la clé d'API de Qonto n'y donne pas accès). -->
+                            <div class="row mt8" invisible="qonto_auth_mode != 'oauth' or qonto_webhook_subscription_id">
                                 <div class="col-lg-4"/>
                                 <div class="col"><button name="action_qonto_register_webhook" type="object" class="btn-primary"
                                         string="Inscrire le webhook" confirm="Inscrire chez Qonto l'adresse de ce serveur pour recevoir les transactions par carte ?"/></div>

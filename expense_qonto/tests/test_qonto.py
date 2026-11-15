@@ -1,9 +1,11 @@
 import hashlib
 import hmac
 import json
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
-from odoo import Command
+from odoo import Command, fields
 from odoo.exceptions import UserError
 from odoo.tests.common import HttpCase, TransactionCase, tagged
 
@@ -226,6 +228,9 @@ class TestQontoWebhookRegistration(TransactionCase):
         super().setUp()
         self.company = self.env.company
         self.company.write({'statement_import_api_login': 'org-slug', 'statement_import_api_password': 'key',
+                            'qonto_auth_mode': 'oauth', 'qonto_access_token': 'tok-acces',
+                            'qonto_refresh_token': 'tok-renouv',
+                            'qonto_access_token_expiry': fields.Datetime.now() + timedelta(hours=1),
                             'qonto_webhook_secret': False, 'qonto_webhook_subscription_id': False})
         self.env['ir.config_parameter'].sudo().set_param('web.base.url', 'https://odoo.example.com')
 
@@ -244,7 +249,7 @@ class TestQontoWebhookRegistration(TransactionCase):
         self.assertTrue(args[1].endswith('/v2/webhook_subscriptions'))
         self.assertEqual(kwargs['json']['callback_url'], 'https://odoo.example.com/expense_qonto/webhook')
         self.assertEqual(kwargs['json']['types'], ['v1/transactions'])
-        self.assertEqual(kwargs['headers']['Authorization'], 'org-slug:key')
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer tok-acces')
         self.assertEqual(self.company.qonto_webhook_secret, kwargs['json']['secret'])
         self.assertTrue(32 <= len(kwargs['json']['secret']) <= 128)
         self.assertEqual(self.company.qonto_webhook_subscription_id, 'sub-1')
@@ -283,8 +288,8 @@ class TestQontoWebhookRegistration(TransactionCase):
         self.assertEqual(action['tag'], 'reload')
         self.assertEqual(self.company.qonto_webhook_subscription_id, 'sub-2')
 
-    def test_production_is_the_default_and_sends_no_staging_token(self):
-        self.assertEqual(self.company.qonto_environment, 'production')
+    def test_production_sends_no_staging_token(self):
+        self.company.write({'qonto_environment': 'production'})
         with patch('odoo.addons.expense_qonto.models.qonto_api.requests.request',
                    return_value=self._response(201, {'id': 'sub-3'})) as request:
             self.company.action_qonto_register_webhook()
@@ -317,3 +322,154 @@ class TestQontoWebhookRegistration(TransactionCase):
 
     def test_the_webhook_secret_is_read_only_in_the_settings(self):
         self.assertTrue(self.env['res.config.settings']._fields['qonto_webhook_secret'].readonly)
+
+
+@tagged('post_install', '-at_install')
+class TestQontoOauth(TransactionCase):
+    """Connexion OAuth 2.0 : adresse d'autorisation, échange du code, renouvellement du jeton, mode clé d'API."""
+
+    REQUESTS = 'odoo.addons.expense_qonto.models.qonto_api.requests'
+
+    def setUp(self):
+        super().setUp()
+        self.company = self.env.company
+        self.company.write({
+            'qonto_auth_mode': 'oauth', 'qonto_environment': 'production', 'qonto_staging_token': False,
+            'qonto_oauth_client_id': 'client-1', 'qonto_oauth_client_secret': 'secret-1',
+            'qonto_access_token': False, 'qonto_refresh_token': False, 'qonto_access_token_expiry': False,
+            'qonto_oauth_connected_on': False, 'qonto_oauth_state': False,
+            'qonto_webhook_secret': False, 'qonto_webhook_subscription_id': False})
+        self.env['ir.config_parameter'].sudo().set_param('web.base.url', 'https://odoo.example.com')
+
+    def _tokens(self, access='acces-1', refresh='renouv-1', expires_in=3600):
+        response = MagicMock(status_code=200, text='')
+        response.json.return_value = {'access_token': access, 'refresh_token': refresh, 'expires_in': expires_in}
+        return response
+
+    def test_oauth_is_the_default_with_webhook_transactions_and_cards(self):
+        company = self.env['res.company'].create({'name': 'Société sans réglage Qonto'})
+        self.assertEqual(company.qonto_auth_mode, 'oauth')
+        self.assertEqual(company.qonto_environment, 'production')
+        self.assertEqual(set(company.qonto_oauth_scope_ids.mapped('code')),
+                         {'offline_access', 'webhook', 'organization.read', 'card.read'})
+
+    def test_connect_sends_the_administrator_to_the_authorization_page_of_qonto(self):
+        action = self.company.action_qonto_oauth_connect()
+        self.assertEqual(action['type'], 'ir.actions.act_url')
+        url = urlparse(action['url'])
+        self.assertEqual(url.geturl().split('?')[0], 'https://oauth.qonto.com/oauth2/auth')
+        query = {key: value[0] for key, value in parse_qs(url.query).items()}
+        self.assertEqual(query['client_id'], 'client-1')
+        self.assertEqual(query['response_type'], 'code')
+        self.assertEqual(query['redirect_uri'], 'https://odoo.example.com/expense_qonto/oauth/callback')
+        self.assertEqual(set(query['scope'].split()), {'offline_access', 'webhook', 'organization.read', 'card.read'})
+        self.assertEqual(query['state'], self.company.qonto_oauth_state)
+        self.assertTrue(query['state'].startswith('%s-' % self.company.id))
+
+    def test_offline_access_is_always_requested(self):
+        self.company.qonto_oauth_scope_ids = self.env['qonto.oauth.scope'].search([('code', '=', 'webhook')])
+        self.assertIn('offline_access', self.company._qonto_oauth_scope_codes())
+
+    def test_the_sandbox_uses_the_sandbox_authorization_page(self):
+        self.company.write({'qonto_environment': 'sandbox', 'qonto_staging_token': 'tok'})
+        action = self.company.action_qonto_oauth_connect()
+        self.assertTrue(action['url'].startswith('https://oauth-sandbox.staging.qonto.co/oauth2/auth?'))
+
+    def test_connect_needs_the_client_credentials_and_https(self):
+        self.company.qonto_oauth_client_secret = False
+        with self.assertRaises(UserError):
+            self.company.action_qonto_oauth_connect()
+        self.company.qonto_oauth_client_secret = 'secret-1'
+        self.env['ir.config_parameter'].sudo().set_param('web.base.url', 'http://odoo.example.com')
+        with self.assertRaises(UserError):
+            self.company.action_qonto_oauth_connect()
+
+    def test_the_callback_exchanges_the_code_for_the_tokens(self):
+        self.company.action_qonto_oauth_connect()
+        with patch(self.REQUESTS + '.post', return_value=self._tokens()) as post:
+            self.company._qonto_oauth_finish('le-code', self.company.qonto_oauth_state)
+        args, kwargs = post.call_args
+        self.assertEqual(args[0], 'https://oauth.qonto.com/oauth2/token')
+        self.assertEqual(kwargs['data'], {
+            'grant_type': 'authorization_code', 'code': 'le-code', 'client_id': 'client-1',
+            'client_secret': 'secret-1', 'redirect_uri': 'https://odoo.example.com/expense_qonto/oauth/callback'})
+        self.assertNotIn('Authorization', kwargs['headers'])  # les identifiants vont dans le corps, jamais en Basic
+        self.assertEqual((self.company.qonto_access_token, self.company.qonto_refresh_token), ('acces-1', 'renouv-1'))
+        self.assertTrue(self.company.qonto_oauth_connected_on)
+        self.assertFalse(self.company.qonto_oauth_state)  # l'état est à usage unique
+
+    def test_a_wrong_state_is_refused_and_nothing_is_exchanged(self):
+        self.company.action_qonto_oauth_connect()
+        with patch(self.REQUESTS + '.post') as post:
+            with self.assertRaises(UserError):
+                self.company._qonto_oauth_finish('le-code', 'un-autre-etat')
+            with self.assertRaises(UserError):
+                self.company._qonto_oauth_finish('le-code', False)
+        post.assert_not_called()
+        self.assertFalse(self.company.qonto_access_token)
+
+    def test_an_expired_access_token_is_refreshed_and_the_new_refresh_token_is_kept(self):
+        self.company.write({
+            'qonto_access_token': 'vieux', 'qonto_refresh_token': 'renouv-1',
+            'qonto_access_token_expiry': fields.Datetime.now() - timedelta(minutes=1)})
+        api_response = MagicMock(status_code=200, text='')
+        api_response.content = b'{"transactions": []}'
+        api_response.json.return_value = {'transactions': []}
+        with patch(self.REQUESTS + '.post', return_value=self._tokens('acces-2', 'renouv-2')) as post, \
+                patch(self.REQUESTS + '.request', return_value=api_response) as request:
+            self.env['qonto.api']._get(self.company, 'transactions')
+        self.assertEqual(post.call_args[1]['data']['grant_type'], 'refresh_token')
+        self.assertEqual(post.call_args[1]['data']['refresh_token'], 'renouv-1')
+        self.assertEqual(request.call_args[1]['headers']['Authorization'], 'Bearer acces-2')
+        self.assertEqual(self.company.qonto_refresh_token, 'renouv-2')
+
+    def test_a_valid_access_token_is_not_refreshed(self):
+        self.company.write({
+            'qonto_access_token': 'valide', 'qonto_refresh_token': 'renouv-1',
+            'qonto_access_token_expiry': fields.Datetime.now() + timedelta(minutes=30)})
+        api_response = MagicMock(status_code=200, text='')
+        api_response.content = b'{}'
+        api_response.json.return_value = {}
+        with patch(self.REQUESTS + '.post') as post, patch(self.REQUESTS + '.request', return_value=api_response) as request:
+            self.env['qonto.api']._get(self.company, 'transactions')
+        post.assert_not_called()
+        self.assertEqual(request.call_args[1]['headers']['Authorization'], 'Bearer valide')
+
+    def test_oauth_without_a_connection_asks_to_connect(self):
+        with patch(self.REQUESTS + '.request') as request:
+            with self.assertRaises(UserError):
+                self.env['qonto.api']._get(self.company, 'transactions')
+        request.assert_not_called()
+
+    def test_the_sandbox_sends_the_staging_token_to_the_token_endpoint_too(self):
+        self.company.write({'qonto_environment': 'sandbox', 'qonto_staging_token': 'tok-staging'})
+        self.company.action_qonto_oauth_connect()
+        with patch(self.REQUESTS + '.post', return_value=self._tokens()) as post:
+            self.company._qonto_oauth_finish('le-code', self.company.qonto_oauth_state)
+        self.assertEqual(post.call_args[0][0], 'https://oauth-sandbox.staging.qonto.co/oauth2/token')
+        self.assertEqual(post.call_args[1]['headers']['X-Qonto-Staging-Token'], 'tok-staging')
+
+    def test_api_key_mode_still_calls_qonto_with_the_key_and_cannot_register_the_webhook(self):
+        self.company.write({'qonto_auth_mode': 'api_key', 'statement_import_api_login': 'org-slug',
+                            'statement_import_api_password': 'key'})
+        response = MagicMock(status_code=200, text='')
+        response.content = b'{}'
+        response.json.return_value = {}
+        with patch(self.REQUESTS + '.request', return_value=response) as request:
+            self.env['qonto.api']._get(self.company, 'transactions')
+        self.assertEqual(request.call_args[1]['headers']['Authorization'], 'org-slug:key')
+        with self.assertRaises(UserError):
+            self.company.action_qonto_register_webhook()
+
+    def test_disconnect_forgets_the_tokens(self):
+        self.company.write({'qonto_access_token': 'a', 'qonto_refresh_token': 'r',
+                            'qonto_oauth_connected_on': fields.Datetime.now()})
+        self.company.action_qonto_oauth_disconnect()
+        self.assertFalse(self.company.qonto_access_token or self.company.qonto_refresh_token
+                         or self.company.qonto_oauth_connected_on)
+
+    def test_the_settings_screen_has_the_oauth_fields(self):
+        settings = self.env['res.config.settings'].create({'qonto_oauth_client_id': 'c-ecran'})
+        settings.execute()
+        self.assertEqual(self.company.qonto_oauth_client_id, 'c-ecran')
+        self.assertTrue(settings.qonto_oauth_redirect_uri.endswith('/expense_qonto/oauth/callback'))

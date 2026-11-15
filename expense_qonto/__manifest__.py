@@ -21,6 +21,7 @@ sans tiers « divers ».
     'depends': ['expense_core'],
     'data': [
         'security/ir.model.access.csv',
+        'data/qonto_oauth_scope_data.xml',
         'data/ir_cron_data.xml',
         'views/account_bank_statement_card_views.xml',
         'views/res_config_settings_views.xml',
