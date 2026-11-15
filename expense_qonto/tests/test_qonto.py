@@ -4,7 +4,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from odoo import Command
-from odoo.exceptions import UserError, ValidationError
+from odoo.exceptions import UserError
 from odoo.tests.common import HttpCase, TransactionCase, tagged
 
 from ..controllers.main import QontoWebhook
@@ -299,9 +299,21 @@ class TestQontoWebhookRegistration(TransactionCase):
         self.assertEqual(request.call_args[0][1], 'https://thirdparty-sandbox.staging.qonto.co/v2/webhook_subscriptions')
         self.assertEqual(request.call_args[1]['headers']['X-Qonto-Staging-Token'], 'tok')
 
-    def test_sandbox_requires_the_staging_token(self):
-        with self.assertRaises(ValidationError):
-            self.company.write({'qonto_environment': 'sandbox', 'qonto_staging_token': False})
+    def test_sandbox_without_a_staging_token_refuses_to_call_qonto(self):
+        self.company.write({'qonto_environment': 'sandbox', 'qonto_staging_token': False})
+        with patch('odoo.addons.expense_qonto.models.qonto_api.requests.request') as request:
+            with self.assertRaises(UserError):
+                self.company.action_qonto_register_webhook()
+        request.assert_not_called()
+
+    def test_the_settings_screen_saves_the_environment_and_the_token_together(self):
+        """L'écran écrit l'environnement puis le jeton sur la société : l'enregistrement ne doit pas refuser le premier
+        avant que le second ne soit écrit."""
+        settings = self.env['res.config.settings'].create({
+            'qonto_environment': 'sandbox', 'qonto_staging_token': 'tok-ecran'})
+        settings.execute()
+        self.assertEqual(self.company.qonto_environment, 'sandbox')
+        self.assertEqual(self.company.qonto_staging_token, 'tok-ecran')
 
     def test_the_webhook_secret_is_read_only_in_the_settings(self):
         self.assertTrue(self.env['res.config.settings']._fields['qonto_webhook_secret'].readonly)

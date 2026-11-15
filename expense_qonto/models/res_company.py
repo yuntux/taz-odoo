@@ -1,7 +1,7 @@
 import secrets
 
-from odoo import _, api, fields, models
-from odoo.exceptions import UserError, ValidationError
+from odoo import _, fields, models
+from odoo.exceptions import UserError
 
 
 class ResCompany(models.Model):
@@ -36,12 +36,6 @@ class ResCompany(models.Model):
     qonto_webhook_subscription_id = fields.Char(
         string="Qonto : abonnement au webhook", groups='base.group_system', copy=False, readonly=True,
         help="Identifiant de l'abonnement créé chez Qonto par le bouton « Inscrire le webhook ».")
-
-    @api.constrains('qonto_environment', 'qonto_staging_token')
-    def _check_qonto_staging_token(self):
-        for company in self.sudo():
-            if company.qonto_environment == 'sandbox' and not company.qonto_staging_token:
-                raise ValidationError(_("Le jeton de staging est obligatoire dans l'environnement bac à sable de Qonto."))
 
     def _qonto_webhook_url(self):
         self.ensure_one()

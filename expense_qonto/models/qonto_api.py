@@ -26,8 +26,13 @@ class QontoApi(models.AbstractModel):
         headers = {'Authorization': '%s:%s' % (company.statement_import_api_login, company.statement_import_api_password)}
         base_url = BASE_URL
         if company.qonto_environment == 'sandbox':
+            # Contrôlé ici et non à l'enregistrement : l'écran des paramètres écrit l'environnement et le jeton champ par
+            # champ, et une contrainte refuserait l'environnement avant que le jeton ne soit écrit.
+            if not company.qonto_staging_token:
+                raise UserError(_("Le jeton de staging est obligatoire dans l'environnement bac à sable de Qonto (société %s).",
+                                  company.name))
             base_url = SANDBOX_URL
-            headers['X-Qonto-Staging-Token'] = company.qonto_staging_token or ''
+            headers['X-Qonto-Staging-Token'] = company.qonto_staging_token
         response = requests.request(
             method, base_url.rstrip('/') + '/' + path, params=params or {}, json=payload, timeout=TIMEOUT, headers=headers)
         if response.status_code not in ok:
