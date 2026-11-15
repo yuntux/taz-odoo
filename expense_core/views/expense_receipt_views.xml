@@ -29,6 +29,10 @@
                     <div class="alert alert-danger mb-0" role="alert" invisible="validation_status != 'rejected'">
                         Dépense refusée : voir le motif ci-dessous, corrigez puis renvoyez-la.
                     </div>
+                    <div class="mb-2" invisible="expense_origin != 'card' or state != 'draft' or validation_status != 'no'">
+                        <button name="action_expense_add_receipt_photo" string="Ajouter le justificatif (photo)" type="object"
+                                class="btn btn-primary btn-lg w-100"/>
+                    </div>
                     <group>
                         <field name="move_type" invisible="1"/>
                         <field name="expense_origin" invisible="1"/>
@@ -115,6 +119,15 @@
                 <field name="state" widget="badge" optional="show"/>
             </list>
         </field>
+    </record>
+
+    <!-- Ouvre une dépense sur l'écran simplifié : adresse /odoo/action-expense_core.action_expense_open_receipt/<id>, celle
+         que porte la notification mobile d'une dépense par carte à justifier. -->
+    <record id="action_expense_open_receipt" model="ir.actions.act_window">
+        <field name="name">Dépense</field>
+        <field name="res_model">account.move</field>
+        <field name="view_mode">form</field>
+        <field name="view_ids" eval="[(5, 0, 0), (0, 0, {'view_mode': 'form', 'view_id': ref('view_expense_receipt_form')})]"/>
     </record>
 
     <record id="action_expense_my_receipts" model="ir.actions.act_window">

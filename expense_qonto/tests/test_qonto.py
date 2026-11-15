@@ -18,7 +18,7 @@ def _tx(**extra):
     tx = {
         'id': 'tx-1', 'transaction_id': 'tx-1', 'operation_type': 'card', 'side': 'debit', 'status': 'completed',
         'amount': 38.4, 'currency': 'EUR', 'label': 'Taxi Parisien', 'settled_at': '2026-11-10T09:00:00.000Z',
-        'card_id': 'card-uuid-1', 'card_last_digits': '4242', 'bank_account_id': BANK_ACCOUNT,
+        'card_id': 'card-uuid-1', 'card_last_digits': '7777', 'bank_account_id': BANK_ACCOUNT,
     }
     tx.update(extra)
     return tx
@@ -67,7 +67,7 @@ class TestQontoExpense(TransactionCase):
     def test_unknown_card_is_created_without_holder(self):
         move = self._create()
         card = move.expense_card_id
-        self.assertEqual((card.code, card.qonto_card_id, card.journal_id), ('4242', 'card-uuid-1', self.journal))
+        self.assertEqual((card.code, card.qonto_card_id, card.journal_id), ('7777', 'card-uuid-1', self.journal))
         self.assertFalse(card.employee_id)
         self.assertIn("pas de porteur", move.message_ids[0].body)
 
@@ -76,7 +76,7 @@ class TestQontoExpense(TransactionCase):
             {'name': 'Porteur', 'login': 'porteur_qonto', 'email': 'p@example.com'})
         self.employee.user_id = user
         self.env['account.bank.statement.card'].create({
-            'code': '4242', 'qonto_card_id': 'card-uuid-1', 'journal_id': self.journal.id, 'employee_id': self.employee.id})
+            'code': '7777', 'qonto_card_id': 'card-uuid-1', 'journal_id': self.journal.id, 'employee_id': self.employee.id})
         move = self._create()
         self.assertEqual(move._get_expense_spender(), self.employee)
         self.assertTrue(move.activity_ids.filtered(lambda a: a.user_id == user))
@@ -84,6 +84,26 @@ class TestQontoExpense(TransactionCase):
     def test_merchant_fiche_with_the_same_name_is_the_partner(self):
         merchant = self.env['res.partner'].create({'name': 'Taxi Parisien', 'is_company': True})
         self.assertEqual(self._create().partner_id, merchant)
+
+    def test_the_holder_notification_and_first_reminder_link_to_the_simplified_form(self):
+        user = self.env['res.users'].with_context(no_reset_password=True).create(
+            {'name': 'Porteur lien', 'login': 'porteur_lien', 'email': 'pl@example.com'})
+        self.employee.user_id = user
+        self.Move._qonto_card_for(self.company, _tx()).employee_id = self.employee
+        with patch('odoo.addons.expense_core.models.account_move.AccountMove._expense_notify', autospec=True) as notify:
+            def links(record):
+                return [call[1].get('deep_link') for call in notify.call_args_list if call[0][0] == record]
+
+            move = self._create()
+            self.assertEqual(links(move), [True])  # notification à la création, adressée au porteur
+            notify.reset_mock()
+            move.write({'qonto_transaction_date': '2026-11-01'})
+            self.Move._cron_qonto_reminders()
+            self.assertEqual(links(move), [True])  # première relance : au porteur
+            notify.reset_mock()
+            move.write({'qonto_reminder_stage': 1, 'qonto_reminder_date': '2026-11-01'})
+            self.Move._cron_qonto_reminders()
+            self.assertEqual(links(move), [False])  # seconde relance : à l'encadrement
 
     def _ticket(self, **extra):
         return dict({'merchant': 'RESTO TICKET TEST', 'siret': '73282932000074', 'siren': '732829320',
@@ -144,7 +164,7 @@ class TestQontoExpense(TransactionCase):
             {'name': 'Porteur N', 'login': 'porteur_notif', 'email': 'pn@example.com'})
         self.employee.user_id = user
         self.env['account.bank.statement.card'].create({
-            'code': '4242', 'qonto_card_id': 'card-uuid-1', 'journal_id': self.journal.id, 'employee_id': self.employee.id})
+            'code': '7777', 'qonto_card_id': 'card-uuid-1', 'journal_id': self.journal.id, 'employee_id': self.employee.id})
         move = self._create()
         message = self.env['mail.message'].search([('model', '=', 'account.move'), ('res_id', '=', move.id),
                                                    ('subject', 'ilike', 'à compléter')])
@@ -159,7 +179,7 @@ class TestQontoExpense(TransactionCase):
              'groups_id': [Command.set([self.env.ref('base.group_user').id, self.env.ref('taz-common.taz-management').id])]})
         self.employee.user_id = user
         self.env['account.bank.statement.card'].create({
-            'code': '4242', 'qonto_card_id': 'card-uuid-1', 'journal_id': self.journal.id, 'employee_id': self.employee.id})
+            'code': '7777', 'qonto_card_id': 'card-uuid-1', 'journal_id': self.journal.id, 'employee_id': self.employee.id})
         move = self._create(settled_at='2026-01-01T09:00:00.000Z')
         subject = lambda s: self.env['mail.message'].search([('res_id', '=', move.id), ('subject', 'ilike', s)])
         self.assertEqual(self.Move._cron_qonto_reminders(), move)

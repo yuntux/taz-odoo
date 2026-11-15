@@ -111,7 +111,8 @@ class AccountMove(models.Model):
             move._expense_notify(
                 spender.user_id.partner_id, _("Dépense par carte à compléter"),
                 _("Votre carte a payé %(amount).2f %(currency)s chez %(label)s : ajoutez le justificatif et choisissez "
-                  "le projet sur %(move)s.", amount=amount, currency=currency.name, label=label, move=move.display_name))
+                  "le projet sur %(move)s.", amount=amount, currency=currency.name, label=label, move=move.display_name),
+                deep_link=True)  # le clic sur la notification mobile ouvre la dépense sur l'écran simplifié
         elif refund:
             move._expense_notify(
                 move._expense_management_partners(), _("Remboursement par carte à rattacher"), message)
@@ -198,7 +199,8 @@ class AccountMove(models.Model):
                     subject = _("Justificatif manquant à relancer")
                     body = _("Le justificatif de %(move)s manque toujours, malgré la relance du porteur.",
                              move=move.display_name)
-                move._expense_notify(partners, subject, body)
+                # La première relance s'adresse au porteur : lien vers l'écran simplifié ; la seconde, à l'encadrement.
+                move._expense_notify(partners, subject, body, deep_link=move.qonto_reminder_stage == 0)
                 move.write({'qonto_reminder_stage': move.qonto_reminder_stage + 1, 'qonto_reminder_date': today})
                 reminded |= move
         return reminded

@@ -58,6 +58,8 @@ export class ReceiptCapture extends Component {
             error: "",
             previewUrl: "",
         });
+        // Dépense existante à justifier (dépense par carte) : la photo lui est jointe au lieu de créer un reçu.
+        this.moveId = (this.props.action && this.props.action.context && this.props.action.context.expense_move_id) || false;
         this.cv = null;
         this.stream = null;
         this.timer = null;
@@ -298,7 +300,9 @@ export class ReceiptCapture extends Component {
         this.state.step = "saving";
         const image = this.state.previewUrl.split(",")[1];
         try {
-            const action = await this.orm.call("account.move", "expense_create_from_photo", [image]);
+            const action = this.moveId
+                ? await this.orm.call("account.move", "expense_attach_photo", [this.moveId, image])
+                : await this.orm.call("account.move", "expense_create_from_photo", [image]);
             await this.action.doAction(action);
         } catch (error) {
             this.state.step = "preview";

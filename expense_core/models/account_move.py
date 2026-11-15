@@ -445,12 +445,30 @@ class AccountMove(models.Model):
         group = self.env.ref('taz-common.taz-management', raise_if_not_found=False)
         return group.sudo().users.filtered(lambda u: u.company_ids & self.company_id).partner_id if group else self.env['res.partner']
 
-    def _expense_notify(self, partners, subject, body):
-        """Message adressé (e-mail ou notification selon les préférences), posté par le robot Odoo."""
+    def _expense_deep_link(self):
+        """Adresse qui ouvre la dépense sur l'écran simplifié du reçu (celle de la notification mobile)."""
+        self.ensure_one()
+        return '/odoo/action-expense_core.action_expense_open_receipt/%s' % self.id
+
+    def _expense_notify(self, partners, subject, body, deep_link=False):
+        """Message adressé (e-mail ou notification selon les préférences), posté par le robot Odoo.
+
+        Avec `deep_link`, le clic sur la notification mobile ouvre la dépense sur l'écran simplifié du reçu, dans un
+        nouvel onglet, au lieu de la fiche comptable standard (voir _notify_by_web_push_prepare_payload)."""
         self.ensure_one()
         if partners:
-            self.message_notify(partner_ids=partners.ids, subject=subject, body=body,
-                                author_id=self.env.ref('base.partner_root').id)
+            record = self.with_context(expense_push_url=self._expense_deep_link()) if deep_link else self
+            record.message_notify(partner_ids=partners.ids, subject=subject, body=body,
+                                  author_id=self.env.ref('base.partner_root').id)
+
+    def _notify_by_web_push_prepare_payload(self, message, msg_vals=False):
+        """Ajoute l'adresse à ouvrir au clic (data.url) quand la notification vient de _expense_notify avec un lien ;
+        le service worker de ce module l'ouvre dans un nouvel onglet (controllers/webmanifest.py)."""
+        payload = super()._notify_by_web_push_prepare_payload(message, msg_vals=msg_vals)
+        url = self.env.context.get('expense_push_url')
+        if url:
+            payload['options']['data']['url'] = url
+        return payload
 
     def _expense_send_alerts(self):
         """Dépense au-dessus du seuil : e-mail au DM, ou à la direction ; cumul d'une personne au-dessus du sien :
