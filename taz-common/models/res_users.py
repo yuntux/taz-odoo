@@ -140,3 +140,12 @@ class tazResUsers(models.Model):
         endpoint = 'https://graph.microsoft.com/v1.0/me/messages'
         req = self.env.user._msgraph_post(endpoint, json_mail_structure)
         return req
+
+    def send_unregistered_user_reminder(self, *, after_days=5, batch_size=100):
+        """Supprimé : plus de mail « Invitation en attente » (« Rappel pour les utilisateurs non enregistrés »).
+
+        Odoo l'envoie au créateur d'un compte qui ne s'est pas connecté 5 jours après. Ici les comptes sont créés par le
+        système (OdooBot) ou par l'administrateur, jamais par la personne qui les suit : le mail n'avait aucun lecteur, et
+        les utilisateurs se connectent avec Microsoft, sans mot de passe à activer. La tâche planifiée d'Odoo peut rester
+        en place : elle n'envoie plus rien."""
+        return None
