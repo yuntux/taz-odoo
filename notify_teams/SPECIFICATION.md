@@ -277,6 +277,26 @@ d'exécution du flux.
   utilisateurs).
 - Les cartes adaptatives dans un message Graph sont à tester ; la documentation de l'API ne cite que l'action `OpenUrl`
   pour les cartes, ce qui suffit au besoin.
+- **Compte de service dédié, visible comme expéditeur** : contrairement au webhook (§6.2.1), où l'expéditeur est
+  « Flow bot » et le compte reste invisible, ici son nom et sa photo s'affichent chez tous les destinataires. Le nommer
+  « Odoo Notifications » et lui mettre un logo. Il lui faut une licence Microsoft 365 incluant Teams (Business Basic
+  suffit, environ 6 à 7 $ par mois) ; Power Automate n'est pas nécessaire. Un compte nominatif est possible pour la
+  phase 0 seulement (§6.3.2) : les messages sembleraient venir de cette personne, elle ne recevrait jamais les siens,
+  et un changement de mot de passe, une règle d'accès conditionnel, l'authentification multifacteur ou un départ
+  couperaient l'envoi pour tout le monde.
+- **Pas de notification pour soi-même** : Teams ne notifie pas un message que l'on a envoyé, y compris dans le chat
+  « Moi ». Le test de la phase 0 exige donc **deux comptes** (le compte de service qui envoie, un vrai utilisateur qui
+  reçoit). Si le destinataire est le compte de service lui-même, il n'y a aucune notification : le repli par e-mail du
+  §2 couvre ce cas.
+- **Ce que voit le destinataire** : une conversation individuelle avec le compte de service, et une bannière push
+  mobile (nom, photo, aperçu du texte). Le tap ouvre Teams, pas l'URL (§3). Mettre un texte lisible (titre et une
+  phrase) dans le corps du message en plus de la carte : l'aperçu push d'une carte seule est peut-être générique.
+- **À vérifier en phase 0** : un premier message vers un utilisateur qui n'a jamais échangé avec le compte (création de
+  la conversation par `POST /chats`) déclenche bien un push sur un vrai mobile ; le push peut être retardé si
+  l'utilisateur est actif sur Teams desktop (comportement normal de Teams) ; l'affichage de la carte adaptative.
+- **Charge côté Odoo** : une seule connexion, faite une fois par un administrateur pour le compte de service ; les
+  utilisateurs n'ont rien à installer ni à connecter. Le coût principal par rapport au webhook est le flux par code
+  d'autorisation avec `offline_access`.
 
 #### 6.2.5 Bot Teams (message proactif)
 - Application Azure Bot, adresse publique appelée par Microsoft, **application Teams installée chez chaque utilisateur**
@@ -316,7 +336,7 @@ supprime cette contrainte mobile.
 | 6.2.1 Webhook « Workflows » | Aucune licence premium d'après Microsoft ; à confirmer avec un destinataire dynamique | Oui : le flux appartient à un compte, de service recommandé | Non : Odoo envoie un simple appel HTTP, la connexion Teams est gérée par le flux | Non d'après la documentation Microsoft (vérifié, voir 6.2.1) ; reste à confirmer sur un utilisateur qui n'a jamais reçu de message | Oui (`Action.OpenUrl`) |
 | 6.2.2 Logic App Azure | Pas de licence par utilisateur ; abonnement Azure, facturation à l'exécution | Oui : connexion Teams du connecteur | Non côté Odoo ; jeton de la connexion à surveiller côté Azure | Non | Oui |
 | 6.2.3 Power Automate (HTTP) | Power Automate Premium, environ 13 à 15 € par mois, sur le seul compte propriétaire | Oui : propriétaire du flux, de service recommandé | Non côté Odoo | Non | Oui |
-| 6.2.4 Graph direct | Pas de licence dédiée ; le compte de service a besoin d'une licence Teams | Oui : jeton délégué | **Oui** : flux par code d'autorisation, `offline_access`, renouvellement (Annexe A) | Non | Oui (carte avec `OpenUrl`, à tester) |
+| 6.2.4 Graph direct | Pas de licence dédiée ; le compte de service a besoin d'une licence Teams | **Oui, visible** : jeton délégué ; son nom et sa photo apparaissent comme expéditeur | **Oui** : flux par code d'autorisation, `offline_access`, renouvellement (Annexe A) | Non | Oui (carte avec `OpenUrl`, à tester) |
 | 6.2.5 Bot Teams | Inscription Azure Bot et hébergement, tarif non vérifié | Non : identité du bot | Non : jeton d'application (secret ou certificat) | **Oui** : application installée chez chacun (ou poussée par l'administrateur Teams) | Oui (carte avec `OpenUrl`) |
 | 6.2.6 Fil d'activité (exclue) | Aucune licence Power Automate ; inscription Entra gratuite | Non : droits d'application | Non | **Oui** : application Teams installée chez chacun | **Non** : un seul lien, vers un domaine Teams, sans libellé |
 
