@@ -123,5 +123,8 @@ class TestServiceWorker(HttpCase):
         script = self.url_open('/web/service-worker.js').text
         self.assertIn('notificationclick', script)
         self.assertIn('self.clients.openWindow(url)', script)
+        # la nouvelle version prend la main sans attendre la fermeture des onglets d'Odoo
+        self.assertIn('self.skipWaiting()', script)
+        self.assertIn('self.clients.claim()', script)
         # notre traitement du clic passe avant celui d'Odoo, qu'il interrompt quand la notification porte une adresse
         self.assertLess(script.index('stopImmediatePropagation'), script.index('openDiscussChannel'))
