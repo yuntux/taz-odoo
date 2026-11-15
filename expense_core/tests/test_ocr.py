@@ -471,6 +471,8 @@ class TestExpenseOcr(TransactionCase):
             receipt.expense_reimbursed_amount = 31.0
         with self.assertRaises(ValidationError):
             receipt.expense_reimbursed_amount = 0.0
+        with self.assertRaises(ValidationError):
+            receipt.expense_reimbursed_amount = -5.0
 
     def test_the_rounding_of_a_reduction_is_absorbed_by_the_last_line(self):
         receipt = self._read(azure_response(30.0, 2.73, items=[('A', 10.0), ('B', 10.0), ('C', 10.0)], rate=10.0))
