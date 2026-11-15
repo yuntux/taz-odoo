@@ -22,6 +22,11 @@ class AccountMove(models.Model):
          "Cette transaction Qonto a déjà créé une dépense."),
     ]
 
+    def _expense_generic_partners(self):
+        """Le réglage de société « Tiers des dépenses par carte » : mis faute de fiche au nom du commerçant, il est
+        remplacé par le commerçant que la lecture du ticket retrouve (code commun avec les notes de frais)."""
+        return super()._expense_generic_partners() | self.company_id.sudo().qonto_default_partner_id
+
     def _get_expense_spender(self):
         self.ensure_one()
         if self.expense_origin == 'card' and self.expense_card_id:

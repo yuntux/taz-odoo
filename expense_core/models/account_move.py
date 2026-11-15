@@ -288,7 +288,13 @@ class AccountMove(models.Model):
             distribution = {str(project.account_id.id): 100} if project.account_id else False
             move.invoice_line_ids.write({'analytic_distribution': distribution})
 
-    def _ensure_expense_outsourcing_link(self, project):
+    def _expense_generic_partners(self):
+        """Tiers « de repli » d'une dépense par carte, mis faute de fiche pour le commerçant : la lecture du ticket les
+        remplace par le vrai commerçant quand elle le retrouve (hook, rempli par expense_qonto)."""
+        self.ensure_one()
+        return self.env['res.partner']
+
+    def _ensure_expense_outsourcing_link(self, project, check_rights=True, partner=None):
         """Déclare le tiers de la pièce comme fournisseur du projet (type « Autres ») s'il ne l'est pas déjà.
 
         project_accounting refuse toute écriture liée à un projet dont le tiers n'est ni le client ni un fournisseur
@@ -298,10 +304,10 @@ class AccountMove(models.Model):
         directeur de mission), ou pour l'Office : sinon la contrainte reste en vigueur.
         """
         self.ensure_one()
-        partner = self._get_expense_link_partner()
+        partner = partner or self._get_expense_link_partner()
         if not partner:
             return
-        if project not in self.allowed_project_ids and not self.env.user.has_group(OFFICE_GROUP):
+        if check_rights and project not in self.allowed_project_ids and not self.env.user.has_group(OFFICE_GROUP):
             return
         Link = self.env['project.outsourcing.link'].sudo()
         if not Link.search_count([('project_id', '=', project.id), ('partner_id', '=', partner.id)]):
@@ -692,6 +698,16 @@ class AccountMove(models.Model):
             partner, merchant_note = self._ocr_find_merchant(data)
             if partner:
                 self.expense_merchant_id = partner
+                # Dépense par carte : le tiers est le commerçant. Quand il n'est que le tiers de repli (aucune fiche
+                # ne portait le nom donné par la banque), le commerçant retrouvé par ses identifiants le remplace.
+                if self.expense_origin == 'card' and self.partner_id in self._expense_generic_partners():
+                    if self.expense_project_id:
+                        # Le choix du projet a déjà fait déclarer l'ancien tiers fournisseur du projet : le nouveau l'est aussi.
+                        self._ensure_expense_outsourcing_link(
+                            self.expense_project_id, check_rights=False, partner=partner)
+                    self.partner_id = partner
+                    notes.append(_("le tiers de la dépense est maintenant le commerçant lu sur le ticket (%s)",
+                                   partner.display_name))
             if merchant_note:
                 notes.append(merchant_note)
         total = data.get('total')

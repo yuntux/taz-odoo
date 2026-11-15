@@ -83,6 +83,37 @@ class TestQontoExpense(TransactionCase):
         merchant = self.env['res.partner'].create({'name': 'Taxi Parisien', 'is_company': True})
         self.assertEqual(self._create().partner_id, merchant)
 
+    def _ticket(self, **extra):
+        return dict({'merchant': 'RESTO TICKET TEST', 'siret': '73282932000074', 'siren': '732829320',
+                     'vat': 'FR44732829320', 'date': None, 'total': None}, **extra)
+
+    def test_the_ticket_replaces_the_fallback_partner_with_the_merchant_found_by_siret(self):
+        """Même code que les notes de frais : le tiers de repli laisse la place au commerçant lu sur le ticket."""
+        merchant = self.env['res.partner'].create({'name': 'Les vrais Restos SAS', 'is_company': True,
+                                                   'siret': '73282932000074'})
+        move = self._create()
+        self.assertEqual(move.partner_id, self.default_partner)
+        move._apply_ocr_result(self._ticket())
+        self.assertEqual(move.partner_id, merchant)
+        self.assertEqual(move.expense_merchant_id, merchant)
+        self.assertIn('Le tiers de la dépense est maintenant le commerçant', move.message_ids[0].body)
+
+    def test_the_ticket_creates_the_merchant_when_no_fiche_knows_it(self):
+        move = self._create()
+        move._apply_ocr_result(self._ticket())
+        self.assertEqual(move.partner_id.name, 'RESTO TICKET TEST')
+        self.assertEqual(move.partner_id.siret, '73282932000074')
+        self.assertNotEqual(move.partner_id, self.default_partner)
+
+    def test_the_ticket_leaves_a_real_partner_alone(self):
+        real = self.env['res.partner'].create({'name': 'Carte Resto', 'is_company': True})
+        other = self.env['res.partner'].create({'name': 'Autre', 'is_company': True, 'siret': '73282932000074'})
+        move = self._create(label='Carte Resto')
+        self.assertEqual(move.partner_id, real)
+        move._apply_ocr_result(self._ticket())
+        self.assertEqual(move.partner_id, real)
+        self.assertEqual(move.expense_merchant_id, other)
+
     def test_unknown_account_or_missing_partner_creates_nothing(self):
         self.assertFalse(self._create(bank_account_id='autre', card_id='card-x'))
         self.company.qonto_default_partner_id = False
