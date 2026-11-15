@@ -1,4 +1,5 @@
 
+from . import mail_thread
 from . import res_industry
 from . import res_sector
 from . import res_partner
