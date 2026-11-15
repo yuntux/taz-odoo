@@ -58,6 +58,28 @@ class TestNoLeaveNotification(TransactionCase):
         self.leave._notify_manager()
         self.assertEqual(self.env['mail.notification'].sudo().search_count([]), before)
 
+    def test_no_approval_activity_is_created_for_a_request_to_validate(self):
+        """Sans cette coupure, une demande à valider par le responsable crée une activité « à valider » pour lui."""
+        manager_type = self.env['hr.leave.type'].create({
+            'name': 'Type à valider (test)', 'requires_allocation': 'no', 'leave_validation_type': 'manager'})
+        leave = self.env['hr.leave'].sudo().create({
+            'employee_id': self.employee.id, 'holiday_status_id': manager_type.id,
+            'request_date_from': date(2026, 12, 14), 'request_date_to': date(2026, 12, 15)})
+        self.assertEqual(leave.state, 'confirm')
+        self.assertFalse(leave.activity_ids)
+
+    def test_an_existing_approval_activity_is_removed_when_the_leave_is_touched(self):
+        manager_type = self.env['hr.leave.type'].create({
+            'name': 'Type à valider (test 2)', 'requires_allocation': 'no', 'leave_validation_type': 'manager'})
+        leave = self.env['hr.leave'].sudo().create({
+            'employee_id': self.employee.id, 'holiday_status_id': manager_type.id,
+            'request_date_from': date(2026, 12, 21), 'request_date_to': date(2026, 12, 22)})
+        # une activité héritée du passé, posée à la main
+        leave.activity_schedule('hr_holidays.mail_act_leave_approval', user_id=self.manager_user.id)
+        self.assertTrue(leave.activity_ids)
+        leave.activity_update()
+        self.assertFalse(leave.activity_ids)
+
     def test_other_models_still_notify(self):
         """La coupure ne concerne que les congés : un message adressé sur une autre fiche notifie toujours."""
         partner = self.env['res.partner'].create({'name': 'Fiche témoin'})
