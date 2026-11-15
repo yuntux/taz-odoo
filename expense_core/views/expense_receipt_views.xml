@@ -66,9 +66,11 @@
                             <field name="currency_id" column_invisible="True"/>
                         </list>
                     </field>
-                    <!-- Le montant TTC du ticket : c'est ce que le salarié se fait rembourser. -->
+                    <!-- Le total TTC du ticket par défaut ; le salarié peut en demander moins (les lignes sont réduites au
+                         prorata à l'enregistrement). -->
                     <group>
-                        <field name="amount_total" string="Montant à rembourser"/>
+                        <field name="expense_ticket_total" invisible="not expense_ticket_total"/>
+                        <field name="expense_reimbursed_amount" readonly="state != 'draft' or validation_status != 'no'"/>
                     </group>
                     <!-- Sans chatter, le salarié lit ici la réponse des valideurs (le motif d'un refus). -->
                     <field name="review_ids" widget="tier_validation" invisible="not review_ids" readonly="1">

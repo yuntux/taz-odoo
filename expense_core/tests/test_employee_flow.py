@@ -5,6 +5,7 @@ from odoo import Command
 from odoo.exceptions import AccessError, ValidationError
 from odoo.tests.common import TransactionCase, tagged
 
+from ..models.account_move import AccountMove
 from .test_ocr import REQUESTS, azure_response
 
 
@@ -22,6 +23,7 @@ class TestEmployeeFlow(TransactionCase):
         cls.consultant = cls._user('consultant_flow', groups)
         cls.colleague = cls._user('colleague_flow', groups)
         cls.outsider = cls._user('outsider_flow', [ref('base.group_user')])
+        cls.office = cls._user('office_flow', groups + [ref('account.group_account_invoice'), ref('taz-common.taz-adv')])
         cls.employee = cls.env['hr.employee'].create({'name': 'Consultant flow', 'user_id': cls.consultant.id})
         cls.colleague_employee = cls.env['hr.employee'].create({'name': 'Collègue flow', 'user_id': cls.colleague.id})
         cls.project = cls.env['project.project'].search(
@@ -101,6 +103,44 @@ class TestEmployeeFlow(TransactionCase):
         with self.assertRaises(Exception):  # noqa: B017 - refus de validation ou de droit, selon la couche
             receipt.with_user(self.consultant).action_post()
         self.assertEqual(receipt.state, 'draft')
+
+    def _read_as_consultant(self, tax_total):
+        receipt = self._receipt_as_consultant()
+        self.env['ir.attachment'].with_user(self.consultant).create({
+            'name': 'ticket.png', 'raw': b'ticket-sans-taxe', 'mimetype': 'image/png',
+            'res_model': 'account.move', 'res_id': receipt.id})
+        post = Mock(status_code=202, headers={'Operation-Location': 'https://ocr.example.com/op'})
+        get = Mock(status_code=200)
+        get.json.return_value = azure_response(38.4, tax_total)  # aucun taux lu : les lignes restent sans taxe
+        with patch.multiple(REQUESTS, post=Mock(return_value=post), get=Mock(return_value=get)):
+            receipt.with_user(self.consultant).action_run_ocr()
+        return receipt
+
+    def _office_decides(self, receipt, action):
+        act = getattr(receipt.with_user(self.office), action)()
+        wizard = self.env['comment.wizard'].with_user(self.office).with_context(**act['context']).create(
+            {'comment': 'Bon pour paiement'})
+        wizard.add_comment()
+
+    def test_a_receipt_without_taxes_is_sent_but_the_office_cannot_approve_it_as_is(self):
+        self.env['tier.definition'].search([]).filtered(
+            lambda t: t.model == 'account.move').write({'active': True})
+        receipt = self._read_as_consultant(tax_total=3.40)
+        self.assertFalse(receipt.invoice_line_ids.tax_ids)
+        with patch.object(AccountMove, '_get_approval_directors', lambda rec: self.env['res.users']):
+            receipt.with_user(self.consultant).request_validation()  # envoi permis sans taxe
+            self.env.invalidate_all()
+            self.assertEqual(receipt.validation_status, 'pending')
+            with self.assertRaises(ValidationError):  # l'Office ne peut pas approuver sans taxe
+                receipt.with_user(self.office).validate_tier()
+            self.assertEqual(receipt.validation_status, 'pending')
+            # Il choisit la taxe : l'écart de TVA avec le ticket (3,49 contre 3,40) est accepté en conscience et tracé.
+            receipt.with_user(self.office).invoice_line_ids.tax_ids = self.tax10
+            self._office_decides(receipt, 'validate_tier')
+            self.assertEqual(receipt.validation_status, 'validated')
+        body = ' '.join(receipt.message_ids.mapped('body'))
+        self.assertIn('malgré les écarts avec le ticket', body)
+        self.assertIn('TVA de la pièce', body)
 
     def test_a_receipt_outside_the_staffing_is_refused_at_submission(self):
         receipt = self._receipt_as_consultant()

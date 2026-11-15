@@ -14,6 +14,8 @@
         <field name="sequence">20</field>
         <field name="approve_sequence" eval="True"/>
         <field name="has_comment" eval="True"/>
+        <!-- Le valideur complète la pièce pendant la validation (taxe d'une ligne, catégorie, projet). -->
+        <field name="allow_write_for_reviewer" eval="True"/>
         <field name="comment_approve_default">Bon pour paiement</field>
         <field name="notify_on_pending" eval="True"/>
         <field name="notify_on_rejected" eval="True"/>
@@ -30,6 +32,8 @@
         <field name="sequence">10</field>
         <field name="approve_sequence" eval="True"/>
         <field name="has_comment" eval="True"/>
+        <!-- Le valideur complète la pièce pendant la validation (taxe d'une ligne, catégorie, projet). -->
+        <field name="allow_write_for_reviewer" eval="True"/>
         <field name="comment_approve_default">Bon pour paiement</field>
         <field name="notify_on_pending" eval="True"/>
         <field name="notify_on_rejected" eval="True"/>

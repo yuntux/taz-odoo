@@ -175,7 +175,7 @@ class TestExpenseOcr(TransactionCase):
             45.0, 4.85, items=[('Plat', 45.0)], details=[(10.0, 20.0, 2.0), (20.0, 8.33, 1.67)]))
         self.assertFalse(receipt.invoice_line_ids.tax_ids)
         self.assertEqual(receipt.amount_total, 45.0)
-        self.assertIn('Choisissez le taux', receipt.expense_warning)
+        self.assertIn("Le taux de TVA d'une ligne manque", receipt.expense_warning)
 
     def test_rates_written_as_text_are_understood(self):
         parse = self.env['expense.ocr']._parse_rate
@@ -186,17 +186,17 @@ class TestExpenseOcr(TransactionCase):
         self.assertIsNone(parse(None))
 
     def test_no_rate_is_ever_deduced_from_the_vat_total(self):
-        # Même un ticket à un seul taux évident : sans taux lu sur la ligne, le salarié choisit.
+        # Même un ticket à un seul taux évident : sans taux lu sur la ligne, l'Office choisit.
         receipt = self._read(azure_response(38.4, 3.49))
         self.assertFalse(receipt.invoice_line_ids.tax_ids)
         self.assertEqual(receipt.amount_total, 38.4)
-        self.assertIn('Choisissez le taux de TVA de chaque ligne', receipt.expense_warning)
+        self.assertIn("Le taux de TVA d'une ligne manque", receipt.expense_warning)
 
     def test_one_receipt_line_per_ticket_line_with_the_total_unchanged(self):
         receipt = self._read(azure_response(30.0, 5.0, items=[('Plat', 12.5), ('Dessert', 7.5), ('Boisson', 10.0)]))
         self.assertEqual(receipt.invoice_line_ids.mapped('name'), ['Plat', 'Dessert', 'Boisson'])
         self.assertEqual(receipt.amount_total, 30.0)
-        self.assertIn('Choisissez le taux', receipt.expense_warning)
+        self.assertIn("Le taux de TVA d'une ligne manque", receipt.expense_warning)
 
     def test_line_rates_read_on_the_ticket_each_get_their_tax(self):
         data = azure_response(30.0, 4.0, items=[('Plat', 20.0), ('Livre', 10.0)])
@@ -210,7 +210,7 @@ class TestExpenseOcr(TransactionCase):
 
     def test_the_banner_follows_the_choices_of_the_user(self):
         receipt = self._read(azure_response(38.4, 3.49))
-        self.assertIn('Choisissez le taux', receipt.expense_warning)
+        self.assertIn("Le taux de TVA d'une ligne manque", receipt.expense_warning)
         receipt.invoice_line_ids.tax_ids = self.tax10
         self.assertFalse(receipt.expense_warning)
         # Un taux de 20 % sur ce ticket donnerait une TVA de 6,40 : l'écart avec le ticket est signalé.
@@ -231,9 +231,10 @@ class TestExpenseOcr(TransactionCase):
         self.assertIn("gestionnaire des notes de frais", receipt.expense_warning)
         self.assertIn("taxe à 10.0 %", receipt.expense_warning)
 
-    def test_a_receipt_without_taxes_is_not_sent_to_validation(self):
+    def test_a_receipt_without_taxes_may_be_sent_but_not_approved(self):
         receipt = self._read(azure_response(38.4, 3.49))
-        with self.assertRaises(ValidationError):
+        receipt._check_expense_lines(taxes=False)  # le salarié peut l'envoyer
+        with self.assertRaises(ValidationError):  # le valideur ne peut pas l'approuver
             receipt._check_expense_lines()
         receipt.invoice_line_ids.tax_ids = self.tax10
         receipt._check_expense_lines()
@@ -446,3 +447,32 @@ class TestExpenseOcr(TransactionCase):
         self.assertFalse(receipt.expense_merchant_id)
         self.assertFalse(self.env['res.partner'].search([('name', '=', MERCHANT)]))
         self.assertIn('archivée', ' '.join(receipt.message_ids.mapped('body')))
+
+    # --- remboursement inférieur au ticket -------------------------------
+    def test_the_reimbursed_amount_is_the_ticket_total_by_default(self):
+        receipt = self._read(azure_response(30.0, 2.73, items=[('Plat', 20.0), ('Boisson', 10.0)], rate=10.0))
+        self.assertEqual(receipt.expense_reimbursed_amount, 30.0)
+        self.assertFalse(receipt.expense_ticket_total)
+
+    def test_a_smaller_reimbursement_reduces_the_lines_pro_rata(self):
+        receipt = self._read(azure_response(30.0, 2.73, items=[('Plat', 20.0), ('Boisson', 10.0)], rate=10.0))
+        receipt.expense_reimbursed_amount = 24.0
+        self.assertEqual(receipt.amount_total, 24.0)
+        self.assertEqual(receipt.expense_ticket_total, 30.0)
+        self.assertEqual(receipt.invoice_line_ids.mapped('price_unit'), [16.0, 8.0])
+        self.assertAlmostEqual(receipt.amount_tax, 2.18, places=2)
+        # le bandeau compare la pièce au ticket ramené à la même proportion : pas d'écart signalé
+        self.assertFalse(receipt.expense_warning)
+        # on peut remonter jusqu'au ticket, jamais au-delà
+        receipt.expense_reimbursed_amount = 30.0
+        self.assertEqual(receipt.amount_total, 30.0)
+        self.assertFalse(receipt.expense_ticket_total)
+        with self.assertRaises(ValidationError):
+            receipt.expense_reimbursed_amount = 31.0
+        with self.assertRaises(ValidationError):
+            receipt.expense_reimbursed_amount = 0.0
+
+    def test_the_rounding_of_a_reduction_is_absorbed_by_the_last_line(self):
+        receipt = self._read(azure_response(30.0, 2.73, items=[('A', 10.0), ('B', 10.0), ('C', 10.0)], rate=10.0))
+        receipt.expense_reimbursed_amount = 10.0
+        self.assertEqual(receipt.amount_total, 10.0)

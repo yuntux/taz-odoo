@@ -31,6 +31,7 @@
             <xpath expr="//group[@name='accounting_info_group']" position="after">
                 <group string="Dépense" name="expense_group">
                     <field name="expense_origin"/>
+                    <field name="expense_ticket_total" invisible="not expense_ticket_total"/>
                     <field name="expense_merchant_id" invisible="expense_origin not in ['employee_receipt', 'card']"
                            options="{'no_create': True}"/>
                     <field name="expense_category_id" invisible="expense_origin not in ['employee_receipt', 'card']"
