@@ -46,6 +46,10 @@ class AccountMove(models.Model):
         string="Total TTC du ticket", currency_field='currency_id', readonly=True, copy=False,
         help="Total du ticket avant que le salarié ne demande un remboursement moindre ; vide tant qu'il demande le "
              "total entier.")
+    expense_claimed_amount = fields.Monetary(
+        string="Montant demandé", currency_field='currency_id', readonly=True, copy=False,
+        help="Montant que le salarié a demandé quand il est inférieur au ticket ; le bandeau signale quand le total "
+             "de la pièce s'en écarte (une taxe hors taxe posée sur une ligne TTC, par exemple).")
     expense_reimbursed_amount = fields.Monetary(
         string="Montant à rembourser", currency_field='currency_id', compute='_compute_expense_reimbursed_amount',
         inverse='_inverse_expense_reimbursed_amount', readonly=False,
@@ -77,7 +81,8 @@ class AccountMove(models.Model):
 
     @api.depends('ocr_result_ids.warnings', 'ocr_result_ids.state', 'ocr_result_ids.payload',
                  'invoice_line_ids.tax_ids', 'invoice_line_ids.product_id', 'invoice_line_ids.price_unit',
-                 'amount_total', 'amount_tax', 'state', 'expense_origin', 'expense_ticket_total')
+                 'amount_total', 'amount_tax', 'state', 'expense_origin', 'expense_ticket_total',
+                 'expense_claimed_amount')
     def _compute_expense_warning(self):
         """Bandeau d'une dépense en brouillon, recalculé à mesure que le salarié la complète : catégorie et taux de
         TVA de chaque ligne, puis remarques de la lecture du justificatif et écarts avec le ticket."""
@@ -94,6 +99,9 @@ class AccountMove(models.Model):
                     messages.append(
                         _("Choisissez la catégorie de dépense.") if not move.expense_category_id and not any(
                             filled.mapped('product_id')) else _("Une ligne n'a pas de catégorie de dépense."))
+                claim_gap = move._expense_claim_gap()
+                if claim_gap:
+                    messages.append(claim_gap)
                 if missing_tax:
                     messages.append(_(
                         "Le taux de TVA d'une ligne manque : l'Office doit le choisir avant de valider la dépense."))
@@ -108,9 +116,10 @@ class AccountMove(models.Model):
         total, tax_total = payload.get('total'), payload.get('tax_total')
         tolerance = 0.005
         if self.expense_ticket_total and total:
-            # Remboursement partiel : la pièce vaut le montant demandé, le ticket est ramené à la même proportion.
-            ratio = self.amount_total / self.expense_ticket_total
-            total = round(total * ratio, 2)
+            # Remboursement partiel : la TVA du ticket est ramenée à la proportion demandée. Le total n'est pas comparé
+            # ici : l'écart avec le montant demandé a son propre message (_expense_claim_gap).
+            ratio = (self.expense_claimed_amount or self.amount_total) / self.expense_ticket_total
+            total = None
             tax_total = round(tax_total * ratio, 2) if tax_total is not None else None
             tolerance = 0.02
         if total is not None and abs(self.amount_total - total) > tolerance:
@@ -252,7 +261,9 @@ class AccountMove(models.Model):
                                     / lines[-1].quantity)
             for line, price in zip(lines, prices):
                 line.price_unit = price
-            move.expense_ticket_total = False if wanted == ticket else ticket
+            reduced = wanted != ticket
+            move.expense_ticket_total = ticket if reduced else False
+            move.expense_claimed_amount = wanted if reduced else False
 
     @api.depends('ocr_result_ids.state', 'invoice_line_ids.tax_ids', 'invoice_line_ids.product_id',
                  'invoice_line_ids.price_unit')
@@ -397,14 +408,28 @@ class AccountMove(models.Model):
                     user=self.env.user.name, gaps=' ; '.join(gaps)))
         return super()._validate_tier(tiers)
 
+    def _expense_claim_gap(self):
+        """Remarque quand le total de la pièce n'est plus le montant que le salarié a demandé (une taxe hors taxe posée
+        sur une ligne dont le prix est TTC fait gonfler le total), sinon None."""
+        self.ensure_one()
+        if self.expense_claimed_amount and abs(self.amount_total - self.expense_claimed_amount) > 0.005:
+            return _(
+                "Le total de la pièce (%(piece)s) n'est plus le montant demandé par le salarié (%(claimed)s) : une "
+                "taxe hors taxe sur une ligne dont le prix est TTC a sans doute changé le total. Choisissez une taxe "
+                "comprise dans le prix, ou corrigez les prix des lignes.",
+                piece=self.amount_total, claimed=self.expense_claimed_amount)
+        return None
+
     def _expense_gaps_with_ticket(self):
         """Écarts entre la pièce et la lecture du ticket (hors manques, qui bloquent) : ce que le valideur voit dans le
         bandeau et accepte en approuvant."""
         self.ensure_one()
+        claim_gap = self._expense_claim_gap()
+        gaps = [claim_gap] if claim_gap else []
         done = self.ocr_result_ids.filtered(lambda r: r.state == 'done')[:1]
         if not done:
-            return []
-        gaps = [w for w in (done.warnings or '').split('\n') if w]
+            return gaps
+        gaps += [w for w in (done.warnings or '').split('\n') if w]
         return gaps + self._ocr_compare_with_ticket(json.loads(done.payload or '{}'))
 
     # ------------------------------------------------------------------

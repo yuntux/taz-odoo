@@ -474,6 +474,24 @@ class TestExpenseOcr(TransactionCase):
         with self.assertRaises(ValidationError):
             receipt.expense_reimbursed_amount = -5.0
 
+    def test_a_tax_excluded_from_the_price_breaks_the_claim_and_the_banner_says_so(self):
+        """Cas du reçu 25626 : une taxe hors taxe posée sur une ligne dont le prix est TTC fait gonfler le total."""
+        tax_excluded = self.env['account.tax'].create({
+            'name': 'TVA 20% HT test', 'amount': 20, 'type_tax_use': 'purchase', 'company_id': self.company.id})
+        receipt = self._read(azure_response(30.0, 2.73, items=[('Plat', 20.0), ('Boisson', 10.0)], rate=10.0))
+        receipt.expense_reimbursed_amount = 15.0
+        self.assertEqual(receipt.expense_claimed_amount, 15.0)
+        self.assertFalse(receipt.expense_warning)
+        receipt.invoice_line_ids.tax_ids = tax_excluded
+        self.assertEqual(receipt.amount_total, 18.0)
+        self.assertIn("n'est plus le montant demandé", receipt.expense_warning)
+        self.assertIn("n'est plus le montant demandé", ' '.join(receipt._expense_gaps_with_ticket()))
+        # Revenir au ticket entier efface la demande et l'avertissement.
+        receipt.invoice_line_ids.tax_ids = self.tax10
+        receipt.expense_reimbursed_amount = 30.0
+        self.assertFalse(receipt.expense_claimed_amount)
+        self.assertFalse(receipt.expense_ticket_total)
+
     def test_the_rounding_of_a_reduction_is_absorbed_by_the_last_line(self):
         receipt = self._read(azure_response(30.0, 2.73, items=[('A', 10.0), ('B', 10.0), ('C', 10.0)], rate=10.0))
         receipt.expense_reimbursed_amount = 10.0
