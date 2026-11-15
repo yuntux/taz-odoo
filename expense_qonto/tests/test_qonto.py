@@ -71,7 +71,9 @@ class TestQontoExpense(TransactionCase):
         self.assertFalse(card.employee_id)
         self.assertIn("pas de porteur", move.message_ids[0].body)
 
-    def test_known_card_gives_the_holder_as_spender_and_a_todo(self):
+    def test_known_card_gives_the_holder_as_spender_and_no_activity(self):
+        """Le porteur reçoit une seule notification (la nôtre) : aucune activité n'est créée, car Odoo en enverrait une
+        seconde, « L'activité … vous a été attribuée »."""
         user = self.env['res.users'].with_context(no_reset_password=True).create(
             {'name': 'Porteur', 'login': 'porteur_qonto', 'email': 'p@example.com'})
         self.employee.user_id = user
@@ -79,7 +81,7 @@ class TestQontoExpense(TransactionCase):
             'code': '7777', 'qonto_card_id': 'card-uuid-1', 'journal_id': self.journal.id, 'employee_id': self.employee.id})
         move = self._create()
         self.assertEqual(move._get_expense_spender(), self.employee)
-        self.assertTrue(move.activity_ids.filtered(lambda a: a.user_id == user))
+        self.assertFalse(move.activity_ids)
 
     def test_merchant_fiche_with_the_same_name_is_the_partner(self):
         merchant = self.env['res.partner'].create({'name': 'Taxi Parisien', 'is_company': True})

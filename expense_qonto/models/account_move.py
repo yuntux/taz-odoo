@@ -103,11 +103,8 @@ class AccountMove(models.Model):
             message += " " + _("La carte n'a pas de porteur : l'Office doit la rattacher à un salarié.")
         move.message_post(body=message)
         if spender.user_id and not refund:
-            move.sudo().activity_schedule(
-                'mail.mail_activity_data_todo', user_id=spender.user_id.id,
-                summary=_("Compléter la dépense par carte : justificatif et projet"))
             # Notification adressée au porteur par le robot Odoo (l'auteur n'est jamais notifié) : e-mail, ou push de
-            # la PWA s'il l'a installée.
+            # la PWA s'il l'a installée. Aucune activité n'est créée : elle ferait envoyer une seconde notification.
             move._expense_notify(
                 spender.user_id.partner_id, _("Dépense par carte à compléter"),
                 _("Votre carte a payé %(amount).2f %(currency)s chez %(label)s : ajoutez le justificatif et choisissez "
